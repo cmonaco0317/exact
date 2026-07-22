@@ -1347,6 +1347,87 @@ def _do_multi_integral(expr_str, bounds_str):
 
 
 # --------------------------------------------------------------------------- #
+#  Polar & parametric plots (Tier-2 scope; x,y samples reuse the Plotly renderer)
+# --------------------------------------------------------------------------- #
+def _do_polar(expr_str):
+    import math
+
+    s = re.sub(r"\b(theta|θ)\b", "t", expr_str)
+    s = re.sub(r"^\s*r\s*=\s*", "", s.strip())
+    expr = _P(s)
+    t = _pick_var(expr, prefer="t")
+    n = 400
+    xs, ys = [], []
+    for i in range(n + 1):
+        ang = 2 * math.pi * i / n
+        r = _numeric(expr, {t: ang})
+        if r is None or abs(r.imag) > 1e-6:
+            xs.append(None)
+            ys.append(None)
+            continue
+        xs.append(r.real * math.cos(ang))
+        ys.append(r.real * math.sin(ang))
+    if all(v is None for v in xs):
+        return {"ok": False, "error": "Couldn't sample that polar curve."}
+    return _result(
+        type="polar plot",
+        input_latex=rf"r = {latex(expr)}",
+        answer_latex=rf"r = {latex(expr)}",
+        answer_str=f"polar: r = {expr}",
+        verify_note="polar curve, θ from 0 to 2π",
+        plot={
+            "var": "theta",
+            "equal_aspect": True,
+            "traces": [{"label": "r", "x": xs, "y": ys}],
+        },
+    )
+
+
+def _do_parametric(body):
+    import math
+
+    lo, hi = 0.0, 2 * math.pi
+    mr = re.search(r"\s+for\s+t\s*=\s*(.+?)\s+to\s+(.+)$", body)
+    if mr:
+        lo = float(N(_P(mr.group(1))))
+        hi = float(N(_P(mr.group(2))))
+        body = body[: mr.start()]
+    mx = re.search(r"x\s*=\s*(.+?)\s*,\s*y\s*=\s*(.+)$", body.strip())
+    if not mx:
+        return {
+            "ok": False,
+            "error": "Use 'x = f(t), y = g(t)' (optionally 'for t=0 to 2*pi').",
+        }
+    xe, ye = _P(mx.group(1)), _P(mx.group(2))
+    t = Symbol("t")
+    n = 400
+    xs, ys = [], []
+    for i in range(n + 1):
+        tv = lo + (hi - lo) * i / n
+        xv, yv = _numeric(xe, {t: tv}), _numeric(ye, {t: tv})
+        if xv is None or yv is None or abs(xv.imag) > 1e-6 or abs(yv.imag) > 1e-6:
+            xs.append(None)
+            ys.append(None)
+            continue
+        xs.append(xv.real)
+        ys.append(yv.real)
+    if all(v is None for v in xs):
+        return {"ok": False, "error": "Couldn't sample that parametric curve."}
+    return _result(
+        type="parametric plot",
+        input_latex=rf"x = {latex(xe)},\ y = {latex(ye)}",
+        answer_latex=rf"x = {latex(xe)},\quad y = {latex(ye)}",
+        answer_str="parametric curve",
+        verify_note="parametric curve",
+        plot={
+            "var": "t",
+            "equal_aspect": True,
+            "traces": [{"label": "curve", "x": xs, "y": ys}],
+        },
+    )
+
+
+# --------------------------------------------------------------------------- #
 #  Plot spec (numeric samples computed here; UI just draws them)
 # --------------------------------------------------------------------------- #
 def _samples(expr, var, lo, hi, n=241):
@@ -1492,6 +1573,14 @@ def solve(query):
         m = re.search(r"^d\s*/\s*d\s*([a-z])\s*(?:of\s+)?\(?(.+?)\)?$", ql)
         if m:
             return _do_derivative(q[q.lower().find(m.group(2)) :], var_name=m.group(1))
+
+        # polar / parametric plots
+        m = re.search(r"^polar\s+plot\s+(?:of\s+)?(.+)$", ql)
+        if m:
+            return _do_polar(q[q.lower().find(m.group(1)) :])
+        m = re.search(r"^parametric\s+plot\s+(?:of\s+)?(.+)$", ql)
+        if m:
+            return _do_parametric(q[q.lower().find(m.group(1)) :])
 
         # gradient / hessian (multivariable)
         m = re.search(r"^gradient\s+(?:of\s+)?(.+)$", ql)

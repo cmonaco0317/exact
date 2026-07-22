@@ -71,6 +71,7 @@ def check(
     type_=None,
     verified=_NOTSET,
     approx=None,
+    has_plot=False,
     label=None,
 ):
     """Generic checker for unique-valued results (derivatives, definite integrals,
@@ -101,6 +102,11 @@ def check(
             problems.append("expected an approx decimal, got none")
         if not approx and got:
             problems.append("unexpected approx %r" % got)
+    if has_plot:
+        p = r.get("plot") or {}
+        tr = (p.get("traces") or [{}])[0]
+        if sum(1 for v in (tr.get("x") or []) if v is not None) < 10:
+            problems.append("plot missing or too few samples")
     _record(label or query, problems)
 
 
@@ -349,6 +355,11 @@ def curated():
         want="1/2",
         verified=True,
     )
+
+    # --- polar / parametric plots (Tier 2) ---
+    check("polar plot r = 1 + cos(theta)", has_plot=True)
+    check("parametric plot x = cos(t), y = sin(t)", has_plot=True)
+    check("parametric plot x = t^2, y = t^3 for t=-2 to 2", has_plot=True)
 
 
 # --------------------------------------------------------------------- fuzz ----

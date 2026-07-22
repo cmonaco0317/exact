@@ -245,6 +245,7 @@ function drawPlot(el, spec){
     legend:{orientation:'h',y:1.12,x:0,font:{size:11}},
     xaxis:{zeroline:true,zerolinecolor:t.line,gridcolor:t.line,color:t.muted},
     yaxis:{zeroline:true,zerolinecolor:t.line,gridcolor:t.line,color:t.muted}};
+  if(spec.equal_aspect){ layout.yaxis.scaleanchor='x'; layout.yaxis.scaleratio=1; }
   Plotly.newPlot(el, data, layout, {responsive:true, displayModeBar:false});
 }
 
@@ -501,6 +502,7 @@ const GRAMMAR =
   "'summary of DATA' (DATA is a list like {4,8,15,16,23}), " +
   "'gradient of EXPR', 'hessian of EXPR', 'double integral of EXPR over x=A to B, y=C to D', " +
   "'triple integral of EXPR over x=A to B, y=C to D, z=E to F', " +
+  "'polar plot r = EXPR', 'parametric plot x = f(t), y = g(t)', " +
   "'critical points of EXPR', 'tangent line to EXPR at x=A', " +
   "'factor EXPR', 'expand EXPR', 'simplify EXPR', or just 'EXPR' (a bare expression — " +
   "including plain arithmetic like 0.15*80 or sqrt(144) — is evaluated). " +
