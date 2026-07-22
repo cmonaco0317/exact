@@ -1637,6 +1637,49 @@ def _do_convert(qty_str, unit_str, to_unit_str):
 
 
 # --------------------------------------------------------------------------- #
+#  3D surface plots (Tier-3 scope; a z-grid the Plotly renderer draws)
+# --------------------------------------------------------------------------- #
+def _do_surface(expr_str):
+    s = re.sub(r"^\s*z\s*=\s*", "", expr_str.strip())
+    expr = _P(s)
+    syms = sorted(expr.free_symbols, key=lambda s: s.name)
+    vx = next((v for v in syms if v.name == "x"), None) or (
+        syms[0] if syms else Symbol("x")
+    )
+    vy = next((v for v in syms if v.name == "y"), None) or (
+        next((v for v in syms if v is not vx), None) or Symbol("y")
+    )
+    lo, hi, n = -4.0, 4.0, 30
+    axis = [lo + (hi - lo) * i / (n - 1) for i in range(n)]
+    zgrid = []
+    for yv in axis:
+        row = []
+        for xv in axis:
+            z = _numeric(expr, {vx: xv, vy: yv})
+            row.append(
+                z.real
+                if (z is not None and abs(z.imag) < 1e-6 and abs(z.real) < 1e6)
+                else None
+            )
+        zgrid.append(row)
+    return _result(
+        type="surface plot",
+        input_latex=rf"z = {latex(expr)}",
+        answer_latex=rf"z = {latex(expr)}",
+        answer_str=f"surface: z = {expr}",
+        verify_note="surface z = f(x, y)",
+        plot={
+            "surface": True,
+            "x": axis,
+            "y": axis,
+            "z": zgrid,
+            "xlabel": vx.name,
+            "ylabel": vy.name,
+        },
+    )
+
+
+# --------------------------------------------------------------------------- #
 #  Plot spec (numeric samples computed here; UI just draws them)
 # --------------------------------------------------------------------------- #
 def _samples(expr, var, lo, hi, n=241):
@@ -1782,6 +1825,13 @@ def solve(query):
         m = re.search(r"^d\s*/\s*d\s*([a-z])\s*(?:of\s+)?\(?(.+?)\)?$", ql)
         if m:
             return _do_derivative(q[q.lower().find(m.group(2)) :], var_name=m.group(1))
+
+        # 3D surface plot: z = f(x, y)
+        m = re.search(
+            r"^(?:3d\s+plot|surface\s+plot)\s+(?:of\s+)?(.+)$", ql
+        ) or re.search(r"^plot\s+z\s*=\s*(.+)$", ql)
+        if m:
+            return _do_surface(q[q.lower().find(m.group(1)) :])
 
         # polar / parametric plots
         m = re.search(r"^polar\s+plot\s+(?:of\s+)?(.+)$", ql)

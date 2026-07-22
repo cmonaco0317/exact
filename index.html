@@ -224,6 +224,15 @@ function themeColors(){
 
 function drawPlot(el, spec){
   const t=themeColors();
+  if(spec.surface){
+    const data=[{type:'surface', x:spec.x, y:spec.y, z:spec.z, colorscale:'Viridis', showscale:false}];
+    const layout={margin:{l:0,r:0,t:0,b:0}, paper_bgcolor:'rgba(0,0,0,0)',
+      scene:{xaxis:{title:spec.xlabel||'x',color:t.muted,gridcolor:t.line},
+             yaxis:{title:spec.ylabel||'y',color:t.muted,gridcolor:t.line},
+             zaxis:{title:'z',color:t.muted,gridcolor:t.line}}};
+    Plotly.newPlot(el, data, layout, {responsive:true, displayModeBar:false});
+    return;
+  }
   const palette=[t.accent, '#e0669a', '#27ae60'];
   const data=[];
   (spec.traces||[]).forEach((tr,i)=>{
