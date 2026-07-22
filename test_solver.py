@@ -268,6 +268,23 @@ def curated():
     check("limit of tan(x)/x as x->0", want="1")
     check("limit of (sqrt(x+1)-1)/x as x->0", want="1/2")
 
+    # --- systems of equations (Tier 1) ---
+    check("solve x + y = 3, x - y = 1", contains=["x=2", "y=1"], verified=True)
+    check("solve x + y = 10 and x - y = 2", contains=["x=6", "y=4"], verified=True)
+    check("solve 2*x + y = 5, x - y = 1", contains=["x=2", "y=1"], verified=True)
+
+    # --- inequalities (Tier 1) ---
+    check("x^2 > 4", contains="x < -2", verified=True)
+    check("solve 2*x - 1 <= 5", contains="x <= 3", verified=True)
+    check("x^2 - 5*x + 6 < 0", contains=["2 < x", "x < 3"], verified=True)
+
+    # --- summation / products (Tier 1) ---
+    check("sum k from k=1 to 100", want="5050", verified=True)
+    check("sum n^2 from n=1 to 10", want="385", verified=True)
+    check("product k from k=1 to 5", want="120", verified=True)
+    check("sum of 1/n^2 from n=1 to oo", want="pi**2/6")
+    check("sum 1/2^n from n=0 to oo", want="2")
+
 
 # --------------------------------------------------------------------- fuzz ----
 def fuzz(n_exprs=400, seed=12345):

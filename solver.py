@@ -762,6 +762,171 @@ def _do_expression(expr_str):
 
 
 # --------------------------------------------------------------------------- #
+#  Systems, inequalities, summation (Tier-1 scope beyond single-variable calc)
+# --------------------------------------------------------------------------- #
+def _do_system(eq_strs):
+    """Solve a system of equations (linear or nonlinear)."""
+    eqs = []
+    for es in eq_strs:
+        es = es.strip()
+        if not es:
+            continue
+        if "=" in es:
+            lhs, _, rhs = es.partition("=")
+            eqs.append(Eq(_P(lhs), _P(rhs)))
+        else:
+            eqs.append(Eq(_P(es), S.Zero))
+    syms = sorted(
+        set().union(*[e.free_symbols for e in eqs]) if eqs else set(),
+        key=lambda s: s.name,
+    )
+    if not eqs or not syms:
+        return {"ok": False, "error": "Couldn't read a system of equations."}
+    sols = sp_solve(eqs, syms, dict=True)
+    in_tex = r",\ ".join(latex(e) for e in eqs)
+    if not sols:
+        return _result(
+            type="system of equations",
+            input_latex=in_tex,
+            answer_latex=r"\text{no solution}",
+            answer_str="no solution",
+            verified=None,
+            verify_note="the system has no solution",
+        )
+    # verify: every solution must satisfy every equation
+    total = 0
+    agree = 0
+    for sol in sols:
+        for e in eqs:
+            total += 1
+            if simplify(e.lhs.subs(sol) - e.rhs.subs(sol)) == 0:
+                agree += 1
+    verified = (agree == total) if total else None
+
+    def _fmt(sol):
+        return ",\\ ".join(
+            rf"{latex(k)} = {latex(sol[k])}" for k in sorted(sol, key=lambda s: s.name)
+        )
+
+    # multiple solutions -> stacked lines via a KaTeX-safe environment (not bare \\)
+    if len(sols) > 1:
+        ans = (
+            r"\begin{gathered}" + r"\\".join(_fmt(s) for s in sols) + r"\end{gathered}"
+        )
+    else:
+        ans = _fmt(sols[0])
+    ans_str = "; ".join(", ".join(f"{k}={v}" for k, v in s.items()) for s in sols)
+    return _result(
+        type="system of equations",
+        input_latex=in_tex,
+        answer_latex=ans,
+        answer_str=ans_str,
+        steps=[rf"\text{{Solve}}\ {in_tex}"],
+        verified=verified,
+        verify_note=(
+            "every solution satisfies every equation"
+            if verified
+            else (
+                "a solution did not check out"
+                if verified is False
+                else "computed symbolically"
+            )
+        ),
+    )
+
+
+def _do_inequality(body):
+    """Solve a one-variable inequality; return the solution set."""
+    m = re.search(r"(<=|>=|<|>)", body)
+    if not m:
+        return {"ok": False, "error": "That doesn't look like an inequality."}
+    op = m.group(1)
+    lhs, rhs = _P(body[: m.start()]), _P(body[m.end() :])
+    rel = {"<": lhs < rhs, "<=": lhs <= rhs, ">": lhs > rhs, ">=": lhs >= rhs}[op]
+    var = _pick_var(lhs - rhs)
+    try:
+        sol = sp.reduce_inequalities(rel, [var])
+    except Exception:
+        sol = sp.solve_univariate_inequality(rel, var, relational=True)
+    verified, note = _verify_inequality(rel, sol, var)
+    return _result(
+        type="inequality",
+        input_latex=latex(rel),
+        answer_latex=latex(sol),
+        answer_str=str(sol),
+        steps=[rf"\text{{Solve}}\ {latex(rel)}", latex(sol)],
+        verified=verified,
+        verify_note=note,
+        plot=_plot_spec(lhs - rhs, var),
+    )
+
+
+def _verify_inequality(rel, sol, var):
+    """Sample points: membership in the solution set must match the raw inequality."""
+    agree = 0
+    total = 0
+    for x0 in _SAMPLES + [0.0, 5.0, -5.0, 3.1415, -2.5, 10.0, -10.0]:
+        try:
+            in_sol = bool(sol.subs(var, x0))
+            in_rel = bool(rel.subs(var, x0))
+        except Exception:
+            continue
+        total += 1
+        if in_sol == in_rel:
+            agree += 1
+    if total == 0:
+        return None, "computed symbolically"
+    return (agree == total), (
+        f"solution set matches the inequality at {total} test points"
+        if agree == total
+        else f"sample check disagreed ({agree}/{total} points)"
+    )
+
+
+def _do_summation(expr_str, var_name, a, b, is_product=False):
+    expr = _P(expr_str)
+    var = Symbol(var_name) if var_name else _pick_var(expr)
+    av = _P(a) if isinstance(a, str) else a
+    bv = _P(b) if isinstance(b, str) else b
+    val = (
+        sp.product(expr, (var, av, bv))
+        if is_product
+        else sp.summation(expr, (var, av, bv))
+    )
+    val_s = simplify(val)
+    sym = r"\prod" if is_product else r"\sum"
+    tex = rf"{sym}_{{{latex(var)}={latex(av)}}}^{{{latex(bv)}}} {latex(expr)}"
+    verified, note = _verify_summation(expr, var, av, bv, val_s, is_product)
+    return _result(
+        type=("product" if is_product else "summation"),
+        input_latex=tex,
+        answer_latex=rf"{tex} = {latex(val_s)}",
+        answer_str=str(val_s),
+        steps=[rf"{tex} = {latex(val_s)}"],
+        verified=verified,
+        verify_note=note,
+    )
+
+
+def _verify_summation(expr, var, a, b, value, is_product):
+    """When the bounds are concrete integers, recompute term-by-term and compare."""
+    try:
+        ai, bi = int(a), int(b)
+    except Exception:
+        return None, "computed symbolically (symbolic bounds)"
+    if bi - ai > 2000:
+        return None, "computed symbolically (range too large to re-check)"
+    acc = S.One if is_product else S.Zero
+    for k in range(ai, bi + 1):
+        t = expr.subs(var, k)
+        acc = acc * t if is_product else acc + t
+    ok = simplify(acc - value) == 0
+    return bool(ok), (
+        "re-computed term by term" if ok else "term-by-term re-check disagreed"
+    )
+
+
+# --------------------------------------------------------------------------- #
 #  Plot spec (numeric samples computed here; UI just draws them)
 # --------------------------------------------------------------------------- #
 def _samples(expr, var, lo, hi, n=241):
@@ -974,6 +1139,21 @@ def solve(query):
             vn = _pick_var(_P(body)).name
             return _do_series(body, vn, about=about, order=order)
 
+        # summation / product:  sum EXPR from k=A to B
+        m = re.search(
+            r"^(sum|summation|product|prod)\s+(?:of\s+)?(.+?)\s+(?:from|for)\s+([a-z])\s*=\s*(.+?)\s+to\s+(.+?)$",
+            ql,
+        )
+        if m:
+            is_prod = m.group(1) in ("product", "prod")
+            body = q[
+                q.lower().find(m.group(2)) : q.lower().find(m.group(2))
+                + len(m.group(2))
+            ]
+            return _do_summation(
+                body, m.group(3), m.group(4), m.group(5), is_product=is_prod
+            )
+
         # tangent line
         m = re.search(
             r"tangent\s+(?:line\s+)?to\s+(.+?)\s+at\s+(?:[a-z]\s*=\s*)?(.+?)$", ql
@@ -994,13 +1174,24 @@ def solve(query):
         if m:
             return _do_critical(q[q.lower().find(m.group(1)) :])
 
-        # solve / roots / zeros
+        # inequality (bare, or "solve ..."):  x^2 > 4 ,  solve 2x - 1 <= 5
+        _iq = re.sub(r"->", "  ", q)  # keep the limit arrow from looking like '>'
+        if re.search(r"(<=|>=|<|>)", _iq):
+            ibody = re.sub(
+                r"^\s*(?:solve|where)\s+", "", q, flags=re.IGNORECASE
+            ).strip()
+            return _do_inequality(ibody)
+
+        # solve / roots / zeros / systems of equations
         m = re.search(r"^solve\s+(.+?)(?:\s+for\s+([a-z]))?$", ql)
         if m:
             body = q[
                 q.lower().find(m.group(1)) : q.lower().find(m.group(1))
                 + len(m.group(1))
             ]
+            parts = re.split(r"\s*,\s*|\s+and\s+", body)
+            if len(parts) >= 2 and sum(1 for p in parts if "=" in p) >= 2:
+                return _do_system(parts)
             return _do_solve(body, var_name=m.group(2))
         m = re.search(r"^(?:roots|zeros|zeroes)\s+of\s+(.+)$", ql)
         if m:
