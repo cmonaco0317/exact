@@ -327,6 +327,14 @@ def curated():
     check("gcd of 12 and 18", want="6", verified=True)
     check("lcm of 4 and 6", want="12", verified=True)
 
+    # --- descriptive statistics (Tier 2) ---
+    check("mean of {1,2,3,4,5}", want="3", verified=True)
+    check("average of 4, 8, 15, 16, 23, 42", want="18", verified=True)
+    check("median of {1,2,3,4}", want="5/2")
+    check("mode of 1,2,2,3,3,3", want="3")
+    check("variance of {2,4,6}", contains=["population=8/3", "sample=4"])
+    check("standard deviation of {2,4,4,4,5,5,7,9}", contains="population=2")
+
 
 # --------------------------------------------------------------------- fuzz ----
 def fuzz(n_exprs=400, seed=12345):

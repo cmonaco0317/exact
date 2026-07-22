@@ -1157,6 +1157,113 @@ def _do_isprime(n):
 
 
 # --------------------------------------------------------------------------- #
+#  Descriptive statistics (Tier-2 scope; hand-built exact arithmetic over a list)
+# --------------------------------------------------------------------------- #
+def _parse_data(s):
+    s = s.strip().strip("{}[]() ").strip()
+    return [_P(x) for x in s.split(",") if x.strip()]
+
+
+def _do_stats(op, data_str):
+    data = _parse_data(data_str)
+    n = len(data)
+    if n == 0:
+        return {"ok": False, "error": "No data values found."}
+    op = re.sub(r"\s+", "", op).lower()
+    data_tex = rf"\{{{','.join(latex(v) for v in data)}\}}"
+    total = sum(data, S.Zero)
+    mean = simplify(total / n)
+    srt = sorted(data, key=lambda v: float(N(v)))
+
+    def _median(xs):
+        m = len(xs)
+        return xs[m // 2] if m % 2 else simplify((xs[m // 2 - 1] + xs[m // 2]) / 2)
+
+    def _res(kind, val, note="", verified=None):
+        return _result(
+            type=kind,
+            input_latex=data_tex,
+            answer_latex=rf"\text{{{kind}}} = {latex(val)}",
+            answer_str=str(val),
+            approx=_num_approx(val),
+            verified=verified,
+            verify_note=note,
+        )
+
+    if op in ("mean", "average"):
+        verified = simplify(mean * n - total) == 0
+        return _res("mean", mean, "sum / count" if verified else "", verified)
+    if op == "median":
+        return _res("median", _median(srt))
+    if op == "mode":
+        from collections import Counter
+
+        c = Counter(str(v) for v in data)
+        top = max(c.values())
+        seen = []
+        for v in data:
+            if c[str(v)] == top and v not in seen:
+                seen.append(v)
+        mode_tex = ",\\ ".join(latex(v) for v in seen)
+        return _result(
+            type="mode",
+            input_latex=data_tex,
+            answer_latex=rf"\text{{mode}} = {mode_tex}",
+            answer_str=", ".join(str(v) for v in seen),
+            verify_note=f"appears {top} time(s)",
+        )
+
+    ss = sum((simplify(v - mean)) ** 2 for v in data)
+    pop_var = simplify(ss / n)
+    samp_var = simplify(ss / (n - 1)) if n > 1 else None
+    if op in ("variance", "var"):
+        parts = [rf"\text{{population}} = {latex(pop_var)}"]
+        if samp_var is not None:
+            parts.append(rf"\text{{sample}} = {latex(samp_var)}")
+        return _result(
+            type="variance",
+            input_latex=data_tex,
+            answer_latex=r",\ \ ".join(parts),
+            answer_str=f"population={pop_var}"
+            + (f", sample={samp_var}" if samp_var is not None else ""),
+            approx=_num_approx(pop_var),
+            verify_note="sum of squared deviations / n (population) or /(n-1) (sample)",
+        )
+    if op in ("standarddeviation", "std", "sd", "stdev"):
+        pop_sd = simplify(sp.sqrt(pop_var))
+        samp_sd = simplify(sp.sqrt(samp_var)) if samp_var is not None else None
+        parts = [rf"\text{{population}} = {latex(pop_sd)}"]
+        if samp_sd is not None:
+            parts.append(rf"\text{{sample}} = {latex(samp_sd)}")
+        return _result(
+            type="standard deviation",
+            input_latex=data_tex,
+            answer_latex=r",\ \ ".join(parts),
+            answer_str=f"population={pop_sd}"
+            + (f", sample={samp_sd}" if samp_sd is not None else ""),
+            approx=_num_approx(pop_sd),
+            verify_note="square root of the variance",
+        )
+    if op in ("summary", "summarystatistics", "stats", "describe"):
+        pop_sd = simplify(sp.sqrt(pop_var))
+        rows = [
+            rf"n = {n}",
+            rf"\text{{mean}} = {latex(mean)}",
+            rf"\text{{median}} = {latex(_median(srt))}",
+            rf"\min = {latex(srt[0])},\ \max = {latex(srt[-1])}",
+            rf"\text{{sd (pop)}} = {latex(pop_sd)}",
+        ]
+        return _result(
+            type="summary statistics",
+            input_latex=data_tex,
+            answer_latex=r"\begin{gathered}" + r"\\".join(rows) + r"\end{gathered}",
+            answer_str=f"n={n}, mean={mean}, median={_median(srt)}, min={srt[0]}, max={srt[-1]}, sd={pop_sd}",
+            verify_note="descriptive statistics",
+        )
+    return {"ok": False, "error": f"Unknown statistic: {op}"}
+
+
+# --------------------------------------------------------------------------- #
 #  Plot spec (numeric samples computed here; UI just draws them)
 # --------------------------------------------------------------------------- #
 def _samples(expr, var, lo, hi, n=241):
@@ -1240,6 +1347,14 @@ def solve(query):
             )
             if mm:
                 return _do_matrix(mm.group(1), mm.group(2))
+        # descriptive statistics also read the RAW query (data braces / commas)
+        ms = re.search(
+            r"^\s*(mean|average|median|mode|variance|var|standard\s+deviation|std|sd|stdev|summary\s+statistics|summary|stats|describe)\s+(?:of\s+)?(.+)$",
+            query.strip(),
+            re.IGNORECASE,
+        )
+        if ms and "," in ms.group(2):
+            return _do_stats(ms.group(1), ms.group(2))
         raw = _clean(preprocess(query))
         q = raw
         ql = q.lower()
