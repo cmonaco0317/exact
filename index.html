@@ -65,6 +65,21 @@
   .readpreview .rp-hint{font-size:12.5px;color:var(--muted);margin-top:8px}
   .readpreview .rp-hint b{color:var(--accent)}
 
+  .keyrow{display:flex;align-items:center;gap:9px;margin:12px 2px 2px;flex-wrap:wrap}
+  .keychip{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;font-weight:600;color:var(--ink);background:var(--panel-2);border:1px solid var(--line);border-radius:999px;padding:5px 11px;cursor:pointer}
+  .keychip:hover{border-color:var(--accent)}
+  .keychip.on{color:var(--ok);border-color:var(--ok)}
+  .keyhint{font-size:12px;color:var(--muted)}
+  .keypanel{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:12px 14px;margin-top:10px}
+  .keypanel p{margin:0 0 9px;font-size:12.5px;color:var(--muted);line-height:1.5}
+  .keypanel p a{color:var(--accent)}
+  .keypanel .krow{display:flex;gap:8px;flex-wrap:wrap}
+  .keypanel input{flex:1;min-width:140px;border:1px solid var(--line);background:var(--panel-2);color:var(--ink);border-radius:9px;padding:9px 10px;font-size:14px;outline:none}
+  .keypanel input:focus{border-color:var(--accent)}
+  .keypanel button{border:0;border-radius:9px;padding:0 14px;height:38px;font-weight:600;font-size:14px;cursor:pointer;background:var(--accent);color:var(--accent-ink)}
+  .keypanel button.ghost{background:var(--panel-2);color:var(--ink);border:1px solid var(--line)}
+  .keypanel .kmsg{font-size:12px;margin-top:8px;color:var(--warn)}
+
   .chips{display:flex;flex-wrap:wrap;gap:7px;margin:12px 0 6px}
   .chip{font-size:13px;color:var(--muted);background:var(--panel-2);border:1px solid var(--line);border-radius:999px;padding:5px 11px;cursor:pointer}
   .chip:hover{color:var(--ink);border-color:var(--accent)}
@@ -117,6 +132,12 @@
     <input id="photo" type="file" accept="image/*" capture="environment" class="hidden" />
   </div>
 
+  <div class="keyrow" id="keyrow">
+    <button id="keytoggle" type="button" class="keychip" aria-expanded="false">🔑 <span id="keystate">Add your API key</span></button>
+    <span class="keyhint">unlocks photo &amp; AI features · stored only in your browser</span>
+  </div>
+  <div id="keypanel" class="keypanel hidden"></div>
+
   <div id="readpreview" class="readpreview hidden"></div>
   <div class="chips" id="chips"></div>
   <div id="status"><span class="spin"></span><span id="statusText">Loading the math engine (one-time, ~10s)…</span></div>
@@ -124,7 +145,7 @@
   <div id="results"></div>
 
   <footer>
-    The math runs entirely in your browser; photos are read by Claude vision, then discarded — nothing is stored.<br />
+    The math runs entirely in your browser and is numerically re-checked before it's shown. Photos are read by Claude vision using <b>your own API key</b>, straight from your browser — nothing is uploaded or stored.<br />
     Examples: <code>integrate 1/(1+x^2) from 0 to 1</code> · <code>limit of sin(x)/x as x-&gt;0</code> · <code>taylor series of e^x</code>
   </footer>
 </div>
@@ -273,17 +294,133 @@ function runQuery(q){
 
 $("#ask").addEventListener("submit",(e)=>{ e.preventDefault(); runQuery($("#q").value); });
 
-// ---- photo → Claude vision OCR → confirm → solve ----
+// ---- bring-your-own-key (stored only in the visitor's browser) ----
+const KEY_LS = "exact_anthropic_key";
+const getKey = ()=>{ try{ return localStorage.getItem(KEY_LS) || ""; }catch(e){ return ""; } };
+const setKey = (k)=>{ try{ localStorage.setItem(KEY_LS, k); }catch(e){} refreshKeyUI(); };
+const clearKey = ()=>{ try{ localStorage.removeItem(KEY_LS); }catch(e){} refreshKeyUI(); };
+
+const keyToggle = $("#keytoggle");
+const keyState = $("#keystate");
+const keyPanel = $("#keypanel");
+
+function refreshKeyUI(){
+  const has = !!getKey();
+  keyToggle.classList.toggle("on", has);
+  keyState.textContent = has ? "AI key added" : "Add your API key";
+}
+
+function openKeyPanel(hintMsg){
+  renderKeyPanel();
+  keyPanel.classList.remove("hidden");
+  keyToggle.setAttribute("aria-expanded", "true");
+  if(hintMsg){ const m = $("#kmsg"); if(m) m.textContent = hintMsg; }
+}
+
+function renderKeyPanel(){
+  const has = !!getKey();
+  keyPanel.innerHTML = "";
+  const p = document.createElement("p");
+  p.innerHTML = has
+    ? "Your Anthropic key is saved in <b>this browser only</b> and sent only to Anthropic. The verified math never needs it."
+    : "Paste an <a href='https://console.anthropic.com/settings/keys' target='_blank' rel='noopener'>Anthropic API key</a> to unlock photo input (and, soon, plain-English problems &amp; step-by-step tutoring). Stored in <b>this browser only</b>, sent only to Anthropic — the verified math works without it.";
+  keyPanel.appendChild(p);
+  const row = document.createElement("div"); row.className = "krow";
+  const input = document.createElement("input");
+  input.type = "password"; input.placeholder = "sk-ant-…"; input.autocomplete = "off"; input.spellcheck = false;
+  const save = document.createElement("button"); save.textContent = has ? "Update" : "Save";
+  const msg = (t)=>{ const m = $("#kmsg"); if(m) m.textContent = t; };
+  save.onclick = ()=>{
+    const v = input.value.trim();
+    if(!v){ msg("Paste a key first."); return; }
+    setKey(v); keyPanel.classList.add("hidden"); keyToggle.setAttribute("aria-expanded", "false");
+  };
+  row.appendChild(input); row.appendChild(save);
+  if(has){
+    const clr = document.createElement("button"); clr.className = "ghost"; clr.textContent = "Clear";
+    clr.onclick = ()=>{ clearKey(); keyPanel.classList.add("hidden"); keyToggle.setAttribute("aria-expanded","false"); };
+    row.appendChild(clr);
+  }
+  keyPanel.appendChild(row);
+  const m = document.createElement("div"); m.className = "kmsg"; m.id = "kmsg"; keyPanel.appendChild(m);
+  input.focus();
+}
+
+keyToggle.addEventListener("click", ()=>{
+  if(keyPanel.classList.contains("hidden")) openKeyPanel();
+  else { keyPanel.classList.add("hidden"); keyToggle.setAttribute("aria-expanded","false"); }
+});
+
+refreshKeyUI();
+
+// ---- photo → Claude vision OCR (browser-direct, the visitor's key) → confirm → solve ----
+const VISION_MODEL = "claude-haiku-4-5-20251001"; // BYOK default; Haiku matched Sonnet for OCR in testing
+const VISION_MAX_TOKENS = 500;
+const VISION_SYSTEM =
+  "You transcribe a single math problem from an image into a calculus-solver " +
+  "command. You do NOT solve it. Reply with ONLY one JSON object, no prose, no code fences.";
+const VISION_INSTRUCTION =
+  "Read the math problem in this image and output JSON:\n" +
+  '{"found": true|false, "latex": "<problem as LaTeX for display>", ' +
+  '"query": "<problem as ONE solver command>", "note": "<caveat if unclear, else empty>"}\n' +
+  "The query MUST use this grammar: 'derivative of EXPR', 'second derivative of EXPR', " +
+  "'integrate EXPR', 'integrate EXPR from A to B', 'limit of EXPR as x -> A', " +
+  "'taylor series of EXPR', 'solve EQUATION', 'critical points of EXPR', " +
+  "'tangent line to EXPR at x=A', 'factor EXPR', 'simplify EXPR', or just 'EXPR'.\n" +
+  "Notation in query: ^ powers, * multiply, sqrt(), sin/cos/tan/ln/log/exp, pi, e, oo=infinity, |x|=abs.\n" +
+  "If no math problem is present, found=false. Never solve; only transcribe.";
+
 const photoInput = $("#photo");
 const camBtn = $("#cam");
 const readPreview = $("#readpreview");
 
-camBtn.addEventListener("click", ()=> photoInput.click());
+camBtn.addEventListener("click", ()=>{
+  if(!getKey()){ openKeyPanel("Add a key to read photos — the typed solver works without one."); return; }
+  photoInput.click();
+});
 photoInput.addEventListener("change", (e)=>{
   const f = e.target.files && e.target.files[0];
   if(f) handlePhoto(f);
   photoInput.value = "";   // allow re-picking the same file
 });
+
+async function readPhotoWithClaude(dataUrl){
+  const key = getKey();
+  if(!key) throw new Error("No API key set.");
+  let mediaType = "image/jpeg", b64 = dataUrl;
+  const mm = /^data:(image\/[a-zA-Z+]+);base64,(.*)$/.exec(dataUrl);
+  if(mm){ mediaType = mm[1]; b64 = mm[2]; }
+  let resp;
+  try{
+    resp = await fetch("https://api.anthropic.com/v1/messages", {
+      method:"POST",
+      headers:{
+        "x-api-key": key,
+        "anthropic-version":"2023-06-01",
+        "anthropic-dangerous-direct-browser-access":"true",
+        "content-type":"application/json"
+      },
+      body: JSON.stringify({
+        model: VISION_MODEL, max_tokens: VISION_MAX_TOKENS, system: VISION_SYSTEM,
+        messages:[{ role:"user", content:[
+          { type:"image", source:{ type:"base64", media_type:mediaType, data:b64 } },
+          { type:"text", text:VISION_INSTRUCTION }
+        ]}]
+      })
+    });
+  }catch(err){ throw new Error("Couldn't reach Anthropic — check your connection."); }
+  if(resp.status === 401){ throw new Error("That API key was rejected — check it in the 🔑 panel."); }
+  if(resp.status === 429){ throw new Error("Anthropic rate-limited that key — wait a moment and retry."); }
+  if(!resp.ok){ throw new Error("Vision service error (" + resp.status + ")."); }
+  const data = await resp.json();
+  let text = ((data.content && data.content[0] && data.content[0].text) || "").trim();
+  if(text.startsWith("```")){ const s=text.indexOf("{"), e=text.lastIndexOf("}"); if(s>=0&&e>s) text=text.slice(s,e+1); }
+  let parsed; try{ parsed = JSON.parse(text); }catch(e){ parsed = null; }
+  if(!parsed || parsed.found === false || !parsed.query){
+    return { found:false, error:(parsed && parsed.note) || "Couldn't find a clear math problem in that photo." };
+  }
+  return { found:true, query:String(parsed.query), latex:parsed.latex?String(parsed.latex):"", note:parsed.note?String(parsed.note):"" };
+}
 
 function downscaleToDataURL(file, maxDim, quality){
   return new Promise((resolve, reject)=>{
@@ -310,13 +447,9 @@ async function handlePhoto(file){
   setStatus("Reading your photo…", true);
   try{
     const dataUrl = await downscaleToDataURL(file, 1600, 0.85);
-    const resp = await fetch("./api/read", {
-      method:"POST", headers:{"content-type":"application/json"},
-      body: JSON.stringify({ image: dataUrl })
-    });
-    const data = await resp.json().catch(()=>({ok:false,error:"Bad response from the reader."}));
+    const data = await readPhotoWithClaude(dataUrl);
     setStatus(null);
-    if(!data.ok || !data.found){
+    if(!data.found){
       showRead(null, data.error || "No clear math problem found — try a closer, sharper photo.");
       return;
     }
@@ -325,7 +458,7 @@ async function handlePhoto(file){
     $("#q").focus();
   }catch(err){
     setStatus(null);
-    showRead(null, "Couldn't read that photo: " + err.message);
+    showRead(null, err.message || "Couldn't read that photo.");
   }
 }
 
