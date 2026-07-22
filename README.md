@@ -5,7 +5,7 @@ real computer-algebra system and numerically re-checked before it's shown** — 
 math is never guessed. Covers calculus, algebra, linear algebra, differential
 equations, statistics, and more. Runs entirely in your browser.
 
-**▶ [Live demo](https://calc-solver.vercel.app)** · desktop or phone.
+**▶ [Live demo](https://exactmath.vercel.app)** · desktop or phone.
 
 ## Why it's reliable
 
