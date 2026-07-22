@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0b1220" />
+<title>Exact — calculus solver</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>∫</text></svg>" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous" />
+<style>
+  :root{
+    --bg:#f7f8fa; --panel:#ffffff; --panel-2:#f1f3f7; --ink:#141922; --muted:#5c6a7e;
+    --line:#e3e8ef; --accent:#3b6df6; --accent-ink:#fff;
+    --ok:#159a5b; --ok-bg:#e7f6ee; --warn:#b7791f; --warn-bg:#fdf3e0; --neutral:#64748b; --neutral-bg:#eef1f6;
+    --shadow:0 1px 2px rgba(16,24,40,.05),0 8px 24px rgba(16,24,40,.06);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0b1220; --panel:#131b2b; --panel-2:#0f1727; --ink:#e8edf6; --muted:#93a1b8;
+      --line:#233145; --accent:#5b86f8; --accent-ink:#fff;
+      --ok:#3ad089; --ok-bg:#0f2a1e;
+      --warn:#f0b429; --warn-bg:#2a2110; --neutral:#94a3b8; --neutral-bg:#182234;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 12px 32px rgba(0,0,0,.35);
+    }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--ink);
+    font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased; padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  .wrap{max-width:760px;margin:0 auto;padding:22px 16px 80px}
+  header{display:flex;align-items:center;gap:10px;margin:6px 0 4px}
+  header .mark{font-size:26px;line-height:1}
+  header h1{font-size:20px;margin:0;letter-spacing:-.01em}
+  header .tag{margin-left:auto;font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 9px}
+  .sub{color:var(--muted);font-size:13.5px;margin:2px 0 18px}
+  .sub b{color:var(--ink);font-weight:600}
+
+  .askbar{position:sticky;top:6px;z-index:5}
+  form.ask{display:flex;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:8px;box-shadow:var(--shadow)}
+  form.ask input{
+    flex:1;border:0;background:transparent;color:var(--ink);font-size:17px;padding:10px 8px;outline:none;min-width:0;
+  }
+  form.ask input::placeholder{color:var(--muted)}
+  form.ask button{
+    border:0;background:var(--accent);color:var(--accent-ink);font-weight:600;font-size:15px;
+    border-radius:10px;padding:0 16px;cursor:pointer;white-space:nowrap;
+  }
+  form.ask button:disabled{opacity:.5;cursor:default}
+  form.ask button.cambtn{
+    background:var(--panel-2);color:var(--ink);border:1px solid var(--line);
+    font-size:19px;padding:0 12px;line-height:1;
+  }
+  form.ask button.cambtn:hover:not(:disabled){border-color:var(--accent)}
+
+  .readpreview{
+    background:var(--panel);border:1px solid var(--accent);border-radius:14px;
+    box-shadow:var(--shadow);padding:12px 14px;margin-top:12px;
+  }
+  .readpreview .rp-head{font-size:12.5px;color:var(--muted);margin-bottom:6px;display:flex;align-items:center;gap:6px}
+  .readpreview .rp-math{overflow-x:auto;padding:4px 2px}
+  .readpreview .rp-note{font-size:12.5px;color:var(--warn);margin-top:6px}
+  .readpreview .rp-hint{font-size:12.5px;color:var(--muted);margin-top:8px}
+  .readpreview .rp-hint b{color:var(--accent)}
+
+  .chips{display:flex;flex-wrap:wrap;gap:7px;margin:12px 0 6px}
+  .chip{font-size:13px;color:var(--muted);background:var(--panel-2);border:1px solid var(--line);border-radius:999px;padding:5px 11px;cursor:pointer}
+  .chip:hover{color:var(--ink);border-color:var(--accent)}
+
+  #status{font-size:13px;color:var(--muted);margin:14px 2px;display:flex;align-items:center;gap:8px}
+  .spin{width:13px;height:13px;border-radius:50%;border:2px solid var(--line);border-top-color:var(--accent);animation:sp .8s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);margin-top:16px;overflow:hidden}
+  .card .head{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--line)}
+  .card .kind{font-size:12px;letter-spacing:.03em;text-transform:uppercase;color:var(--muted);font-weight:600}
+  .badge{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding:4px 10px;border-radius:999px}
+  .badge.ok{color:var(--ok);background:var(--ok-bg)}
+  .badge.warn{color:var(--warn);background:var(--warn-bg)}
+  .badge.neutral{color:var(--neutral);background:var(--neutral-bg)}
+  .card .body{padding:8px 16px 16px}
+  .prob{color:var(--muted);font-size:13px;margin:8px 2px 2px}
+  .answer{padding:12px 4px;overflow-x:auto}
+  .answer .katex-display{margin:.25em 0}
+  .vnote{font-size:12.5px;color:var(--muted);margin:2px 4px 4px}
+  details.steps{margin:6px 0 2px;border-top:1px dashed var(--line);padding-top:8px}
+  details.steps summary{cursor:pointer;font-size:13.5px;color:var(--accent);font-weight:600;list-style:none}
+  details.steps summary::-webkit-details-marker{display:none}
+  .step{padding:8px 4px;border-bottom:1px solid var(--line);overflow-x:auto}
+  .step:last-child{border-bottom:0}
+  .num{color:var(--muted);font-size:12px;margin-right:4px}
+  .plot{width:100%;height:300px;margin-top:8px}
+  .err{color:#c0392b;background:rgba(192,57,43,.08);border:1px solid rgba(192,57,43,.25);border-radius:12px;padding:12px 14px;font-size:14.5px}
+  @media (prefers-color-scheme:dark){.err{color:#ff8a7a;background:rgba(255,90,80,.08);border-color:rgba(255,90,80,.25)}}
+  footer{color:var(--muted);font-size:12px;text-align:center;margin-top:28px;line-height:1.7}
+  footer code{background:var(--panel-2);border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+  .hidden{display:none !important}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="mark">∫</span>
+    <h1>Exact</h1>
+    <span class="tag">verified by SymPy</span>
+  </header>
+  <div class="sub">Snap a photo of a problem, or type it in plain math. Every answer is computed by a real computer-algebra engine and <b>numerically re-checked</b> before it's shown — so the math is never guessed.</div>
+
+  <div class="askbar">
+    <form class="ask" id="ask" autocomplete="off">
+      <button id="cam" type="button" class="cambtn" title="Solve from a photo" aria-label="Solve from a photo" disabled>📷</button>
+      <input id="q" name="q" placeholder="derivative of x^2 sin(x)" inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false" disabled />
+      <button id="go" type="submit" disabled>Solve</button>
+    </form>
+    <input id="photo" type="file" accept="image/*" capture="environment" class="hidden" />
+  </div>
+
+  <div id="readpreview" class="readpreview hidden"></div>
+  <div class="chips" id="chips"></div>
+  <div id="status"><span class="spin"></span><span id="statusText">Loading the math engine (one-time, ~10s)…</span></div>
+
+  <div id="results"></div>
+
+  <footer>
+    The math runs entirely in your browser; photos are read by Claude vision, then discarded — nothing is stored.<br />
+    Examples: <code>integrate 1/(1+x^2) from 0 to 1</code> · <code>limit of sin(x)/x as x-&gt;0</code> · <code>taylor series of e^x</code>
+  </footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg" crossorigin="anonymous"></script>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" integrity="sha384-cCVCZkAjYNxaYKbM8lsArLznDF/SvMFr1jcZrvOpSTCa0W40ZAdLzHCEulnUa5i7" crossorigin="anonymous" charset="utf-8"></script>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js" integrity="sha384-i3R37b3tF+HWudsUf1VSEOY2YxwSNMqY8DQa9Z0O3xh+NkJ9o+yjcGyIi5huj+nB" crossorigin="anonymous"></script>
+<script>
+const EXAMPLES = [
+  "derivative of x^2 sin(x)",
+  "integrate 1/(1+x^2)",
+  "integrate x^2 from 0 to 1",
+  "limit of sin(x)/x as x->0",
+  "taylor series of e^x",
+  "critical points of x^3 - 3x",
+  "tangent line to x^2 at x=1",
+  "solve x^2 - 5x + 6 = 0",
+];
+
+const $ = (s)=>document.querySelector(s);
+const results = $("#results");
+let solveJson = null;
+
+// example chips
+const chipBox = $("#chips");
+EXAMPLES.forEach(ex=>{
+  const c=document.createElement("span"); c.className="chip"; c.textContent=ex;
+  c.onclick=()=>{ $("#q").value=ex; if(solveJson) runQuery(ex); };
+  chipBox.appendChild(c);
+});
+
+function setStatus(html, spinning){
+  const s=$("#status");
+  if(html===null){ s.classList.add("hidden"); return; }
+  s.classList.remove("hidden");
+  s.innerHTML = (spinning?'<span class="spin"></span>':'') + '<span>'+html+'</span>';
+}
+
+function km(tex, el, display){
+  try{ katex.render(tex, el, {displayMode:!!display, throwOnError:false, strict:false}); }
+  catch(e){ el.textContent = tex; }
+}
+
+function badge(v){
+  if(v===true)  return ['ok','✓ Verified'];
+  if(v===false) return ['warn','⚠ Unverified'];
+  return ['neutral','· Exact (SymPy)'];
+}
+
+function themeColors(){
+  const cs=getComputedStyle(document.body);
+  return { ink:cs.getPropertyValue('--ink').trim(), muted:cs.getPropertyValue('--muted').trim(),
+           accent:cs.getPropertyValue('--accent').trim(), line:cs.getPropertyValue('--line').trim() };
+}
+
+function drawPlot(el, spec){
+  const t=themeColors();
+  const palette=[t.accent, '#e0669a', '#27ae60'];
+  const data=[];
+  (spec.traces||[]).forEach((tr,i)=>{
+    data.push({x:tr.x, y:tr.y, mode:'lines', name:tr.label, connectgaps:false,
+      line:{width:i===0?2.4:1.8, color:palette[i%palette.length], dash:i===0?'solid':'dot'}});
+  });
+  if(spec.shade && spec.traces && spec.traces[0]){
+    const [a,b]=spec.shade, tr=spec.traces[0], sx=[], sy=[];
+    for(let k=0;k<tr.x.length;k++){ if(tr.x[k]>=a && tr.x[k]<=b && tr.y[k]!=null){ sx.push(tr.x[k]); sy.push(tr.y[k]); } }
+    if(sx.length){ data.push({x:sx,y:sy,mode:'lines',fill:'tozeroy',line:{width:0},
+      fillcolor:'rgba(91,134,248,.22)',name:'area',hoverinfo:'skip',showlegend:false}); }
+  }
+  if(spec.points && spec.points.length){
+    data.push({x:spec.points.map(p=>p[0]), y:spec.points.map(p=>p[1]), mode:'markers',
+      marker:{size:8,color:'#e0669a',line:{width:1.5,color:'#fff'}}, name:'critical', hoverinfo:'x+y'});
+  }
+  const layout={margin:{l:38,r:10,t:6,b:28}, paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)',
+    font:{color:t.muted, size:11}, showlegend:(data.length>1),
+    legend:{orientation:'h',y:1.12,x:0,font:{size:11}},
+    xaxis:{zeroline:true,zerolinecolor:t.line,gridcolor:t.line,color:t.muted},
+    yaxis:{zeroline:true,zerolinecolor:t.line,gridcolor:t.line,color:t.muted}};
+  Plotly.newPlot(el, data, layout, {responsive:true, displayModeBar:false});
+}
+
+function render(res){
+  const card=document.createElement("div"); card.className="card";
+
+  if(!res.ok){
+    card.innerHTML='<div class="body"><div class="err"></div></div>';
+    card.querySelector(".err").textContent = res.error || "Something went wrong.";
+    results.prepend(card); return;
+  }
+
+  const [bcls,btxt]=badge(res.verified);
+  const head=document.createElement("div"); head.className="head";
+  head.innerHTML='<span class="kind"></span><span class="badge '+bcls+'"></span>';
+  head.querySelector(".kind").textContent=res.type||"result";
+  head.querySelector(".badge").textContent=btxt;
+  card.appendChild(head);
+
+  const body=document.createElement("div"); body.className="body";
+
+  if(res.input_latex){
+    const p=document.createElement("div"); p.className="prob";
+    const lab=document.createElement("span"); lab.textContent="Interpreted as  "; p.appendChild(lab);
+    const mel=document.createElement("span"); km(res.input_latex, mel, false); p.appendChild(mel);
+    body.appendChild(p);
+  }
+
+  const ans=document.createElement("div"); ans.className="answer";
+  km(res.answer_latex||"", ans, true); body.appendChild(ans);
+
+  if(res.verify_note){ const vn=document.createElement("div"); vn.className="vnote"; vn.textContent=res.verify_note; body.appendChild(vn); }
+
+  if(res.steps && res.steps.length){
+    const d=document.createElement("details"); d.className="steps";
+    const sm=document.createElement("summary"); sm.textContent="Show steps ("+res.steps.length+")"; d.appendChild(sm);
+    res.steps.forEach((st,i)=>{
+      const row=document.createElement("div"); row.className="step";
+      const n=document.createElement("span"); n.className="num"; n.textContent=(i+1)+". "; row.appendChild(n);
+      const m=document.createElement("span"); km(st, m, false); row.appendChild(m);
+      d.appendChild(row);
+    });
+    body.appendChild(d);
+  }
+
+  if(res.plot){
+    const pd=document.createElement("div"); pd.className="plot"; body.appendChild(pd);
+    setTimeout(()=>{ try{ drawPlot(pd, res.plot); }catch(e){ pd.remove(); } }, 0);
+  }
+
+  card.appendChild(body);
+  results.prepend(card);
+}
+
+function runQuery(q){
+  if(!solveJson || !q.trim()) return;
+  setStatus("Solving…", true);
+  // let the UI paint the status before the (blocking) sympy call
+  setTimeout(()=>{
+    let res;
+    try{ res = JSON.parse(solveJson(q)); }
+    catch(e){ res = {ok:false, error:"Engine error: "+e.message}; }
+    setStatus(null);
+    render(res);
+    window.scrollTo({top:0, behavior:'smooth'});
+  }, 30);
+}
+
+$("#ask").addEventListener("submit",(e)=>{ e.preventDefault(); runQuery($("#q").value); });
+
+// ---- photo → Claude vision OCR → confirm → solve ----
+const photoInput = $("#photo");
+const camBtn = $("#cam");
+const readPreview = $("#readpreview");
+
+camBtn.addEventListener("click", ()=> photoInput.click());
+photoInput.addEventListener("change", (e)=>{
+  const f = e.target.files && e.target.files[0];
+  if(f) handlePhoto(f);
+  photoInput.value = "";   // allow re-picking the same file
+});
+
+function downscaleToDataURL(file, maxDim, quality){
+  return new Promise((resolve, reject)=>{
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = ()=>{
+      URL.revokeObjectURL(url);
+      let w = img.width, h = img.height;
+      const scale = Math.min(1, maxDim/Math.max(w,h));
+      w = Math.max(1, Math.round(w*scale)); h = Math.max(1, Math.round(h*scale));
+      const c = document.createElement("canvas"); c.width=w; c.height=h;
+      const ctx = c.getContext("2d");
+      ctx.fillStyle="#fff"; ctx.fillRect(0,0,w,h);      // flatten transparency
+      ctx.drawImage(img,0,0,w,h);
+      resolve(c.toDataURL("image/jpeg", quality));
+    };
+    img.onerror = ()=>{ URL.revokeObjectURL(url); reject(new Error("couldn't open that image")); };
+    img.src = url;
+  });
+}
+
+async function handlePhoto(file){
+  readPreview.classList.add("hidden");
+  setStatus("Reading your photo…", true);
+  try{
+    const dataUrl = await downscaleToDataURL(file, 1600, 0.85);
+    const resp = await fetch("./api/read", {
+      method:"POST", headers:{"content-type":"application/json"},
+      body: JSON.stringify({ image: dataUrl })
+    });
+    const data = await resp.json().catch(()=>({ok:false,error:"Bad response from the reader."}));
+    setStatus(null);
+    if(!data.ok || !data.found){
+      showRead(null, data.error || "No clear math problem found — try a closer, sharper photo.");
+      return;
+    }
+    $("#q").value = data.query;
+    showRead(data.latex, data.note || "");
+    $("#q").focus();
+  }catch(err){
+    setStatus(null);
+    showRead(null, "Couldn't read that photo: " + err.message);
+  }
+}
+
+function showRead(latex, message){
+  readPreview.innerHTML = "";
+  const head = document.createElement("div"); head.className="rp-head";
+  head.textContent = latex ? "📷 I read this from your photo:" : "📷 Photo";
+  readPreview.appendChild(head);
+  if(latex){
+    const m = document.createElement("div"); m.className="rp-math"; km(latex, m, true);
+    readPreview.appendChild(m);
+    const hint = document.createElement("div"); hint.className="rp-hint";
+    hint.innerHTML = "Check it, then press <b>Solve</b> — edit the box above if anything's off.";
+    readPreview.appendChild(hint);
+  }
+  if(message){
+    const n = document.createElement("div"); n.className = latex ? "rp-note" : "rp-hint";
+    n.textContent = message; readPreview.appendChild(n);
+  }
+  readPreview.classList.remove("hidden");
+}
+
+async function boot(){
+  try{
+    const pyodide = await loadPyodide();
+    setStatus('Loading SymPy…', true);
+    await pyodide.loadPackage("sympy");
+    setStatus('Starting engine…', true);
+    const src = await (await fetch("./solver.py?v=1")).text();
+    pyodide.runPython(src);
+    const fn = pyodide.globals.get("solve_json");
+    solveJson = (q)=> fn(q);
+    // warm up (first call is slow) with something trivial, off-screen
+    try{ fn("derivative of x"); }catch(e){}
+    setStatus(null);
+    $("#q").disabled=false; $("#go").disabled=false; $("#cam").disabled=false; $("#q").focus();
+  }catch(err){
+    setStatus('Failed to load the engine: '+err.message+'. Check your connection and reload.', false);
+  }
+}
+boot();
+</script>
+</body>
+</html>
