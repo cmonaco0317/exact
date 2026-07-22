@@ -705,6 +705,8 @@ def _do_tangent(expr_str, var_name, at_str):
 
 def _do_algebra(kind, expr_str):
     expr = _P(expr_str)
+    if kind == "factor" and expr.is_Integer:  # "factor 70560" -> prime factorization
+        return _do_factorint(int(expr))
     if kind == "simplify":
         out = simplify(expr)
         t = sp.trigsimp(expr)  # prefer the trig-simpler form when it's shorter
@@ -1109,6 +1111,52 @@ def _do_matrix(op, mat_str):
 
 
 # --------------------------------------------------------------------------- #
+#  Number theory (Tier-2 scope)
+# --------------------------------------------------------------------------- #
+def _do_factorint(n):
+    f = sp.factorint(n)
+    parts_tex = [(rf"{p}^{{{e}}}" if e > 1 else f"{p}") for p, e in sorted(f.items())]
+    tex = r" \cdot ".join(parts_tex) if parts_tex else str(n)
+    ans_str = " * ".join(
+        (f"{p}^{e}" if e > 1 else f"{p}") for p, e in sorted(f.items())
+    )
+    prod = 1
+    for p, e in f.items():
+        prod *= p**e
+    verified = prod == n
+    return _result(
+        type="prime factorization",
+        input_latex=str(n),
+        answer_latex=rf"{n} = {tex}",
+        answer_str=ans_str or str(n),
+        verified=verified,
+        verify_note="factors multiply back to the original" if verified else "",
+    )
+
+
+def _do_isprime(n):
+    if sp.isprime(n):
+        return _result(
+            type="primality",
+            input_latex=str(n),
+            answer_latex=rf"{n}\ \text{{is prime}}",
+            answer_str=f"{n} is prime",
+            verified=True,
+            verify_note="no divisor other than 1 and itself",
+        )
+    f = sp.factorint(n)
+    sm = min(f) if f else None
+    return _result(
+        type="primality",
+        input_latex=str(n),
+        answer_latex=rf"{n}\ \text{{is not prime}}",
+        answer_str=f"{n} is not prime",
+        verified=True,
+        verify_note=(f"divisible by {sm}" if (sm is not None and sm < n) else ""),
+    )
+
+
+# --------------------------------------------------------------------------- #
 #  Plot spec (numeric samples computed here; UI just draws them)
 # --------------------------------------------------------------------------- #
 def _samples(expr, var, lo, hi, n=241):
@@ -1387,6 +1435,24 @@ def solve(query):
         m = re.search(r"^(?:roots|zeros|zeroes)\s+of\s+(.+)$", ql)
         if m:
             return _do_solve(q[q.lower().find(m.group(1)) :])
+
+        # number theory: primality, prime factorization, choose, gcd/lcm
+        m = re.search(r"^is\s+(\d+)\s+(?:a\s+)?prime\b", ql) or re.search(
+            r"^isprime\s*\(?\s*(\d+)", ql
+        )
+        if m:
+            return _do_isprime(int(m.group(1)))
+        m = re.search(
+            r"^(?:prime\s+factori[sz]ation\s+of|factori[sz]e)\s+(\d+)\s*$", ql
+        )
+        if m:
+            return _do_factorint(int(m.group(1)))
+        m = re.search(r"^(\d+)\s+choose\s+(\d+)$", ql)
+        if m:
+            return _do_expression(f"binomial({m.group(1)}, {m.group(2)})")
+        m = re.search(r"^(gcd|lcm)\s+(?:of\s+)?(.+?)\s+and\s+(.+)$", ql)
+        if m:
+            return _do_expression(f"{m.group(1)}({m.group(2)}, {m.group(3)})")
 
         # algebra helpers
         m = re.search(r"^(simplify|factor|expand)\s+(?:trig\s+)?(.+)$", ql)

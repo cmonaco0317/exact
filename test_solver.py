@@ -318,6 +318,15 @@ def curated():
     check("eigenvalues of {{2,0},{0,3}}", contains=["2", "3"], verified=True)
     check("eigenvalues of {{2,1},{1,2}}", contains=["3", "1"], verified=True)
 
+    # --- number theory (Tier 2) ---
+    check("is 73 prime", contains="is prime", verified=True)
+    check("is 91 prime", contains="not prime", verified=True)
+    check("factor 70560", contains=["2^5", "7^2"], verified=True)
+    check("prime factorization of 360", contains="2^3", verified=True)
+    check("10 choose 3", want="120", verified=True)
+    check("gcd of 12 and 18", want="6", verified=True)
+    check("lcm of 4 and 6", want="12", verified=True)
+
 
 # --------------------------------------------------------------------- fuzz ----
 def fuzz(n_exprs=400, seed=12345):
