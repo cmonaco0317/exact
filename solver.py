@@ -955,6 +955,160 @@ def _verify_summation(expr, var, a, b, value, is_product):
 
 
 # --------------------------------------------------------------------------- #
+#  Linear algebra (Tier-2 scope: matrices)
+# --------------------------------------------------------------------------- #
+def _parse_matrix(s):
+    """Parse {{1,2},{3,4}} or [[1,2],[3,4]] into a SymPy Matrix (entries via _P)."""
+    s = s.strip().replace("{", "[").replace("}", "]").strip()
+    if not (s.startswith("[") and s.endswith("]")):
+        raise ValueError("not a matrix")
+    body = s[1:-1].strip()
+    if body.startswith("["):
+        rows = []
+        for rs in re.split(r"\]\s*,\s*\[", body):
+            rs = rs.strip().lstrip("[").rstrip("]")
+            rows.append([_P(e) for e in rs.split(",") if e.strip()])
+    else:  # a single flat vector like {1,2,3}
+        rows = [[_P(e)] for e in body.split(",") if e.strip()]
+    return sp.Matrix(rows)
+
+
+def _mat_zero(M):
+    return all(simplify(e) == 0 for e in M)
+
+
+def _do_matrix(op, mat_str):
+    M = _parse_matrix(mat_str)
+    op = re.sub(r"\s+", "", op).lower()
+    in_tex = latex(M)
+    n = M.rows
+
+    if op in ("determinant", "det"):
+        val = simplify(M.det())
+        return _result(
+            type="determinant",
+            input_latex=in_tex,
+            answer_latex=rf"\det = {latex(val)}",
+            answer_str=str(val),
+            approx=_num_approx(val),
+            verify_note="exact",
+        )
+    if op == "trace":
+        val = simplify(M.trace())
+        return _result(
+            type="trace",
+            input_latex=in_tex,
+            answer_latex=rf"\operatorname{{tr}} = {latex(val)}",
+            answer_str=str(val),
+            approx=_num_approx(val),
+            verify_note="exact",
+        )
+    if op == "rank":
+        val = M.rank()
+        return _result(
+            type="rank",
+            input_latex=in_tex,
+            answer_latex=rf"\operatorname{{rank}} = {val}",
+            answer_str=str(val),
+            verify_note="exact",
+        )
+    if op == "transpose":
+        T = M.T
+        return _result(
+            type="transpose",
+            input_latex=in_tex,
+            answer_latex=latex(T),
+            answer_str=str(T),
+            verify_note="exact",
+        )
+    if op in ("rref", "rowreduce"):
+        R = M.rref()[0]
+        return _result(
+            type="rref",
+            input_latex=in_tex,
+            answer_latex=latex(R),
+            answer_str=str(R),
+            verify_note="reduced row-echelon form",
+        )
+    if op == "inverse":
+        if simplify(M.det()) == 0:
+            return {
+                "ok": False,
+                "error": "This matrix is singular (determinant 0) — it has no inverse.",
+            }
+        inv = M.inv()
+        verified = _mat_zero(M * inv - sp.eye(n))
+        return _result(
+            type="inverse",
+            input_latex=in_tex,
+            answer_latex=latex(inv),
+            answer_str=str(inv),
+            verified=verified,
+            verify_note=(
+                "confirmed: A A^{-1} = I" if verified else "computed symbolically"
+            ),
+        )
+    if op == "eigenvalues":
+        vals = []
+        for v, mult in M.eigenvals().items():
+            vals.extend([simplify(v)] * mult)
+        ok = all(simplify((M - v * sp.eye(n)).det()) == 0 for v in vals)
+        ans = ",\\ ".join(latex(v) for v in vals)
+        return _result(
+            type="eigenvalues",
+            input_latex=in_tex,
+            answer_latex=rf"\lambda = {ans}",
+            answer_str=", ".join(str(v) for v in vals),
+            verified=ok,
+            verify_note=(
+                "every eigenvalue satisfies det(A - λI) = 0"
+                if ok
+                else "computed symbolically"
+            ),
+        )
+    if op == "eigenvectors":
+        lines, ok = [], True
+        for val, mult, vecs in M.eigenvects():
+            val = simplify(val)
+            for vec in vecs:
+                if not _mat_zero(M * vec - val * vec):
+                    ok = False
+                lines.append(rf"\lambda={latex(val)}:\ {latex(vec.T)}")
+        ans = r"\\".join(lines)
+        if len(lines) > 1:
+            ans = r"\begin{gathered}" + ans + r"\end{gathered}"
+        return _result(
+            type="eigenvectors",
+            input_latex=in_tex,
+            answer_latex=ans,
+            answer_str="; ".join(lines),
+            verified=ok,
+            verify_note=(
+                "every vector satisfies A v = λ v" if ok else "computed symbolically"
+            ),
+        )
+    if op == "nullspace":
+        ns = M.nullspace()
+        if not ns:
+            return _result(
+                type="nullspace",
+                input_latex=in_tex,
+                answer_latex=r"\{\vec 0\}",
+                answer_str="{0}",
+                verify_note="the null space is trivial",
+            )
+        ans = ",\\ ".join(latex(v.T) for v in ns)
+        return _result(
+            type="nullspace",
+            input_latex=in_tex,
+            answer_latex=ans,
+            answer_str="; ".join(str(v) for v in ns),
+            verify_note="basis for the null space",
+        )
+    return {"ok": False, "error": f"Unknown matrix operation: {op}"}
+
+
+# --------------------------------------------------------------------------- #
 #  Plot spec (numeric samples computed here; UI just draws them)
 # --------------------------------------------------------------------------- #
 def _samples(expr, var, lo, hi, n=241):
@@ -1029,6 +1183,15 @@ def solve(query):
                 "ok": False,
                 "error": "Type a calculus problem, e.g. `derivative of x^2 sin(x)`.",
             }
+        # linear algebra: matrix ops read the RAW query (preprocess mangles { } braces)
+        if "{" in query or "[" in query:
+            mm = re.search(
+                r"^\s*(determinant|det|inverse|eigenvalues|eigenvectors|rank|rref|transpose|trace|nullspace|row\s*reduce)\s+(?:of\s+)?(.+)$",
+                query.strip(),
+                re.IGNORECASE,
+            )
+            if mm:
+                return _do_matrix(mm.group(1), mm.group(2))
         raw = _clean(preprocess(query))
         q = raw
         ql = q.lower()

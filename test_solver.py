@@ -309,6 +309,15 @@ def curated():
     check("integrate 1/(1+x^2) from 0 to 2", want="atan(2)", approx=True)
     check("integrate 3*x^2 from 0 to 2", want="8", approx=False)
 
+    # --- linear algebra (Tier 2) ---
+    check("determinant of {{1,2},{3,4}}", want="-2")
+    check("det {{1,2,1},{1,1,0},{0,1,1}}", want="0")
+    check("trace of {{1,2},{3,4}}", want="5")
+    check("rank of {{1,2},{2,4}}", want="1")
+    check("inverse of {{1,2},{3,4}}", contains=["-2", "3/2"], verified=True)
+    check("eigenvalues of {{2,0},{0,3}}", contains=["2", "3"], verified=True)
+    check("eigenvalues of {{2,1},{1,2}}", contains=["3", "1"], verified=True)
+
 
 # --------------------------------------------------------------------- fuzz ----
 def fuzz(n_exprs=400, seed=12345):
