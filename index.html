@@ -394,7 +394,8 @@ const GRAMMAR =
   "'derivative of EXPR', 'second derivative of EXPR', 'integrate EXPR', " +
   "'integrate EXPR from A to B', 'limit of EXPR as x -> A', 'taylor series of EXPR', " +
   "'solve EQUATION', 'critical points of EXPR', 'tangent line to EXPR at x=A', " +
-  "'factor EXPR', 'simplify EXPR', or just 'EXPR'. " +
+  "'factor EXPR', 'expand EXPR', 'simplify EXPR', or just 'EXPR' (a bare expression — " +
+  "including plain arithmetic like 0.15*80 or sqrt(144) — is evaluated). " +
   "Notation: ^ powers, * multiply, sqrt(), sin/cos/tan/ln/log/exp, pi, e, oo=infinity, |x|=abs.";
 
 // One browser-direct call to Anthropic with the visitor's key; returns the model's text.
@@ -433,12 +434,12 @@ function parseCmd(text){
 // Plain English -> ONE solver command. A non-empty `note` means the model wasn't sure.
 async function translateWithClaude(text){
   const out = await anthropic(
-    "You translate a student's plain-English calculus request into ONE command for a calculus solver. You do NOT solve it. Fill note ONLY if the request is genuinely ambiguous. Reply with ONLY one JSON object, no prose, no code fences.",
+    "You translate a student's plain-English MATH request into ONE command for a math solver (it handles calculus, algebra, equation-solving, and arithmetic). You do NOT solve it. If the request needs something the solver can't do (systems of equations, matrices, statistics/probability, unit conversion), set found=false with a brief note. Otherwise fill note ONLY if the request is genuinely ambiguous. Reply with ONLY one JSON object, no prose, no code fences.",
     [{ type:"text", text:
       "Translate this request into JSON: " +
-      '{"found": true|false, "query": "<ONE solver command>", "latex": "<the problem as LaTeX>", "note": "<caveat ONLY if ambiguous, else empty>"}\n' +
+      '{"found": true|false, "query": "<ONE solver command>", "latex": "<the problem as LaTeX>", "note": "<caveat ONLY if ambiguous or out of scope, else empty>"}\n' +
       "The query MUST use this grammar: " + GRAMMAR + "\n" +
-      "If it isn't a math/calculus request, found=false.\n\nRequest: " + text }]
+      "If it isn't a math request this solver can handle, found=false with a short note.\n\nRequest: " + text }]
   );
   const r = parseCmd(out);
   if(!r.found && !r.error) r.error = "Couldn't turn that into a solvable problem — try rephrasing.";
