@@ -335,6 +335,21 @@ def curated():
     check("variance of {2,4,6}", contains=["population=8/3", "sample=4"])
     check("standard deviation of {2,4,4,4,5,5,7,9}", contains="population=2")
 
+    # --- multivariable calculus (Tier 2) ---
+    check("gradient of x^2 + y^2", contains=["2*x", "2*y"])
+    check("hessian of x^2 + y^2", contains="2, 0")
+    check("double integral of x*y over x=0 to 1, y=0 to 2", want="1", verified=True)
+    check(
+        "double integral of x^2 + y^2 over x=0 to 1, y=0 to 1",
+        want="2/3",
+        verified=True,
+    )
+    check(
+        "triple integral of x*y*z over x=0 to 1, y=0 to 1, z=0 to 2",
+        want="1/2",
+        verified=True,
+    )
+
 
 # --------------------------------------------------------------------- fuzz ----
 def fuzz(n_exprs=400, seed=12345):

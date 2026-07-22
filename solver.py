@@ -1264,6 +1264,89 @@ def _do_stats(op, data_str):
 
 
 # --------------------------------------------------------------------------- #
+#  Multivariable calculus (Tier-2 scope)
+# --------------------------------------------------------------------------- #
+def _do_gradient(expr_str):
+    expr = _P(expr_str)
+    syms = sorted(expr.free_symbols, key=lambda s: s.name) or [Symbol("x")]
+    parts = [simplify(diff(expr, s)) for s in syms]
+    grad = sp.Matrix(parts)
+    return _result(
+        type="gradient",
+        input_latex=latex(expr),
+        answer_latex=rf"\nabla f = {latex(grad.T)}",
+        answer_str=str(grad.T),
+        steps=[
+            rf"\frac{{\partial f}}{{\partial {latex(s)}}} = {latex(p)}"
+            for s, p in zip(syms, parts)
+        ],
+        verify_note="exact partial derivatives",
+    )
+
+
+def _do_hessian(expr_str):
+    expr = _P(expr_str)
+    syms = sorted(expr.free_symbols, key=lambda s: s.name) or [Symbol("x")]
+    H = sp.hessian(expr, syms)
+    return _result(
+        type="hessian",
+        input_latex=latex(expr),
+        answer_latex=latex(H),
+        answer_str=str(H),
+        verify_note="matrix of second partial derivatives",
+    )
+
+
+def _do_multi_integral(expr_str, bounds_str):
+    expr = _P(expr_str)
+    triples = []
+    for part in bounds_str.split(","):
+        m = re.search(r"([a-z])\s*=?\s*(.+?)\s*(?:to|\.\.)\s*(.+)$", part.strip())
+        if m:
+            triples.append((Symbol(m.group(1)), _P(m.group(2)), _P(m.group(3))))
+    if not triples:
+        return {
+            "ok": False,
+            "error": "Couldn't read the bounds (try 'x=0 to 1, y=0 to 2').",
+        }
+    val = expr
+    for v, a, b in triples:
+        val = integrate(val, (v, a, b))
+    if val.has(Integral):
+        return {
+            "ok": False,
+            "error": "SymPy couldn't evaluate this multiple integral in closed form.",
+        }
+    val_s = simplify(val)
+    # verify: integrating in the reverse order (Fubini) must give the same result
+    try:
+        val2 = expr
+        for v, a, b in reversed(triples):
+            val2 = integrate(val2, (v, a, b))
+        verified = simplify(val_s - simplify(val2)) == 0
+        note = (
+            "confirmed: both integration orders agree (Fubini)"
+            if verified
+            else "the two integration orders disagreed"
+        )
+    except Exception:
+        verified, note = None, "computed symbolically"
+    bnd_tex = ",\\ ".join(
+        rf"{latex(v)}\in[{latex(a)},{latex(b)}]" for v, a, b in triples
+    )
+    return _result(
+        type="multiple integral",
+        input_latex=rf"\iint {latex(expr)}",
+        answer_latex=latex(val_s),
+        answer_str=str(val_s),
+        approx=_num_approx(val_s),
+        steps=[rf"\text{{Integrate over }} {bnd_tex}", rf"= {latex(val_s)}"],
+        verified=verified,
+        verify_note=note,
+    )
+
+
+# --------------------------------------------------------------------------- #
 #  Plot spec (numeric samples computed here; UI just draws them)
 # --------------------------------------------------------------------------- #
 def _samples(expr, var, lo, hi, n=241):
@@ -1409,6 +1492,27 @@ def solve(query):
         m = re.search(r"^d\s*/\s*d\s*([a-z])\s*(?:of\s+)?\(?(.+?)\)?$", ql)
         if m:
             return _do_derivative(q[q.lower().find(m.group(2)) :], var_name=m.group(1))
+
+        # gradient / hessian (multivariable)
+        m = re.search(r"^gradient\s+(?:of\s+)?(.+)$", ql)
+        if m:
+            return _do_gradient(q[q.lower().find(m.group(1)) :])
+        m = re.search(r"^hessian\s+(?:of\s+)?(.+)$", ql)
+        if m:
+            return _do_hessian(q[q.lower().find(m.group(1)) :])
+
+        # double / triple integral over explicit bounds
+        m = re.search(
+            r"^(?:double|triple)\s+integral\s+of\s+(.+?)\s+(?:over|for|with)\s+(.+)$",
+            ql,
+        )
+        if m:
+            body = q[
+                q.lower().find(m.group(1)) : q.lower().find(m.group(1))
+                + len(m.group(1))
+            ]
+            bnds = q[q.lower().find(m.group(2)) :]
+            return _do_multi_integral(body, bnds)
 
         # definite integral: "... from A to B"
         m = re.search(
