@@ -1483,6 +1483,160 @@ def _do_ode(eq_str, dep="y", ind="x"):
 
 
 # --------------------------------------------------------------------------- #
+#  Complex analysis, vector calculus, units (Tier-3 scope)
+# --------------------------------------------------------------------------- #
+def _do_complex(op, expr_str):
+    expr = _P(expr_str)
+    fn = {
+        "re": sp.re,
+        "im": sp.im,
+        "conjugate": sp.conjugate,
+        "modulus": Abs,
+        "argument": sp.arg,
+    }[op]
+    val = simplify(fn(expr))
+    label = {
+        "re": "Re",
+        "im": "Im",
+        "conjugate": "conjugate",
+        "modulus": "modulus",
+        "argument": "arg",
+    }[op]
+    return _result(
+        type=f"complex ({label})",
+        input_latex=latex(expr),
+        answer_latex=latex(val),
+        answer_str=str(val),
+        approx=_num_approx(val),
+        verify_note=f"{label} of the expression",
+    )
+
+
+def _do_residue(expr_str, var_name, point_str):
+    z = Symbol(var_name)
+    expr, pt = _P(expr_str), _P(point_str)
+    val = simplify(sp.residue(expr, z, pt))
+    return _result(
+        type="residue",
+        input_latex=latex(expr),
+        answer_latex=rf"\operatorname{{Res}} = {latex(val)}",
+        answer_str=str(val),
+        approx=_num_approx(val),
+        verify_note=f"residue at {var_name} = {point_str}",
+    )
+
+
+def _parse_vector(s):
+    s = s.strip().strip("()[]{}").strip()
+    return [_P(e) for e in s.split(",") if e.strip()]
+
+
+def _do_vectorcalc(op, field_str):
+    from sympy.vector import CoordSys3D, curl, divergence
+
+    comps = _parse_vector(field_str)
+    if len(comps) != 3:
+        return {"ok": False, "error": "Give a 3-component field, e.g. (x^2, y^2, z^2)."}
+    Cs = CoordSys3D("C")
+    x, y, z = Symbol("x"), Symbol("y"), Symbol("z")
+    to_C = {x: Cs.x, y: Cs.y, z: Cs.z}
+    from_C = {Cs.x: x, Cs.y: y, Cs.z: z}
+    F = (
+        comps[0].subs(to_C) * Cs.i
+        + comps[1].subs(to_C) * Cs.j
+        + comps[2].subs(to_C) * Cs.k
+    )
+    in_tex = rf"\langle {', '.join(latex(c) for c in comps)} \rangle"
+    if op == "divergence":
+        val = simplify(divergence(F).subs(from_C))
+        return _result(
+            type="divergence",
+            input_latex=in_tex,
+            answer_latex=rf"\nabla \cdot F = {latex(val)}",
+            answer_str=str(val),
+            verify_note="divergence of the field",
+        )
+    cv = curl(F)
+    out = sp.Matrix([simplify(cv.dot(b).subs(from_C)) for b in (Cs.i, Cs.j, Cs.k)])
+    return _result(
+        type="curl",
+        input_latex=in_tex,
+        answer_latex=rf"\nabla \times F = {latex(out.T)}",
+        answer_str=str(out.T),
+        verify_note="curl of the field",
+    )
+
+
+_UNIT_MAP = {
+    "km": "kilometer",
+    "kilometer": "kilometer",
+    "kilometers": "kilometer",
+    "m": "meter",
+    "meter": "meter",
+    "meters": "meter",
+    "cm": "centimeter",
+    "mm": "millimeter",
+    "mile": "mile",
+    "miles": "mile",
+    "mi": "mile",
+    "ft": "foot",
+    "foot": "foot",
+    "feet": "foot",
+    "inch": "inch",
+    "inches": "inch",
+    "yard": "yard",
+    "yd": "yard",
+    "kg": "kilogram",
+    "g": "gram",
+    "gram": "gram",
+    "grams": "gram",
+    "lb": "pound",
+    "pound": "pound",
+    "pounds": "pound",
+    "s": "second",
+    "second": "second",
+    "seconds": "second",
+    "min": "minute",
+    "minute": "minute",
+    "minutes": "minute",
+    "hour": "hour",
+    "hours": "hour",
+    "h": "hour",
+    "day": "day",
+    "days": "day",
+    "liter": "liter",
+    "liters": "liter",
+    "l": "liter",
+    "gallon": "gallon",
+    "gallons": "gallon",
+}
+
+
+def _do_convert(qty_str, unit_str, to_unit_str):
+    from sympy.physics import units as U
+    from sympy.physics.units import convert_to
+
+    def _u(name):
+        key = _UNIT_MAP.get(name.lower().strip())
+        if not key:
+            raise ValueError(f"unknown unit '{name}'")
+        return getattr(U, key)
+
+    qty = _P(qty_str)
+    src, dst = _u(unit_str), _u(to_unit_str)
+    val = convert_to(qty * src, dst)
+    coeff = simplify(val / dst)
+    return _result(
+        type="unit conversion",
+        input_latex=rf"{latex(qty)}\ \text{{{unit_str}}}",
+        answer_latex=latex(val),
+        answer_str=str(val),
+        approx=_num_approx(coeff),
+        verify_note="unit conversion",
+    )
+
+
+# --------------------------------------------------------------------------- #
 #  Plot spec (numeric samples computed here; UI just draws them)
 # --------------------------------------------------------------------------- #
 def _samples(expr, var, lo, hi, n=241):
@@ -1807,6 +1961,41 @@ def solve(query):
         m = re.search(r"^(?:roots|zeros|zeroes)\s+of\s+(.+)$", ql)
         if m:
             return _do_solve(q[q.lower().find(m.group(1)) :])
+
+        # complex analysis
+        m = re.search(
+            r"^(real\s*part|imaginary\s*part|conjugate|modulus|argument)\s+(?:of\s+)?(.+)$",
+            ql,
+        )
+        if m:
+            cop = {
+                "real part": "re",
+                "imaginary part": "im",
+                "conjugate": "conjugate",
+                "modulus": "modulus",
+                "argument": "argument",
+            }[re.sub(r"\s+", " ", m.group(1))]
+            return _do_complex(cop, q[q.lower().find(m.group(2)) :])
+        m = re.search(r"^residue\s+(?:of\s+)?(.+?)\s+at\s+([a-z])\s*=\s*(.+)$", ql)
+        if m:
+            body = q[
+                q.lower().find(m.group(1)) : q.lower().find(m.group(1))
+                + len(m.group(1))
+            ]
+            pt = q[
+                q.rfind("=") + 1 :
+            ].strip()  # original case (I is the imaginary unit)
+            return _do_residue(body, m.group(2), pt)
+
+        # vector calculus
+        m = re.search(r"^(divergence|curl)\s+(?:of\s+)?(.+)$", ql)
+        if m:
+            return _do_vectorcalc(m.group(1), q[q.lower().find(m.group(2)) :])
+
+        # unit conversion
+        m = re.search(r"^convert\s+(.+?)\s+([a-z]+)\s+to\s+([a-z]+)\s*$", ql)
+        if m:
+            return _do_convert(m.group(1), m.group(2), m.group(3))
 
         # number theory: primality, prime factorization, choose, gcd/lcm
         m = re.search(r"^is\s+(\d+)\s+(?:a\s+)?prime\b", ql) or re.search(

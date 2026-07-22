@@ -367,6 +367,21 @@ def curated():
     check("solve y' + 2*y = 0", contains="exp(-2*x)", verified=True)
     check("solve y' = x*y", contains="exp(x**2/2)", verified=True)
 
+    # --- complex analysis (Tier 3) ---
+    check("real part of 3 + 4*I", want="3")
+    check("imaginary part of (2+I)^2", want="4")
+    check("conjugate of 3 + 4*I", want="3 - 4*I")
+    check("modulus of 3 + 4*I", want="5")
+    check("residue of 1/(z^2+1) at z=I", want="-I/2")
+
+    # --- vector calculus (Tier 3) ---
+    check("divergence of (x^2, y^2, z^2)", want="2*x + 2*y + 2*z")
+    check("curl of (y, -x, 0)", contains="-2")
+
+    # --- units (Tier 3) ---
+    check("convert 2 hours to minutes", contains="120")
+    check("convert 5 km to miles", contains="mile")
+
 
 # --------------------------------------------------------------------- fuzz ----
 def fuzz(n_exprs=400, seed=12345):
