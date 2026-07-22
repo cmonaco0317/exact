@@ -173,7 +173,7 @@ let solveJson = null;
 const chipBox = $("#chips");
 EXAMPLES.forEach(ex=>{
   const c=document.createElement("span"); c.className="chip"; c.textContent=ex;
-  c.onclick=()=>{ $("#q").value=ex; if(solveJson) runQuery(ex); };
+  c.onclick=()=>{ $("#q").value=ex; if(solveJson) handleSubmit(ex); };
   chipBox.appendChild(c);
 });
 
@@ -278,21 +278,53 @@ function render(res){
   results.prepend(card);
 }
 
-function runQuery(q){
-  if(!solveJson || !q.trim()) return;
-  setStatus("Solving…", true);
-  // let the UI paint the status before the (blocking) sympy call
+// Local-first solve. The regex engine handles clean input instantly (free, offline);
+// the LLM only runs on a parse miss or clearly plain-English input (Phase 1: Understand).
+const localSolve = (q)=> new Promise((resolve)=>{
+  // defer so the UI can paint "Solving…" before the (blocking) sympy call
   setTimeout(()=>{
-    let res;
-    try{ res = JSON.parse(solveJson(q)); }
-    catch(e){ res = {ok:false, error:"Engine error: "+e.message}; }
+    try{ resolve(JSON.parse(solveJson(q))); }
+    catch(e){ resolve({ ok:false, error:"Engine error: "+e.message }); }
+  }, 20);
+});
+const scrollTop = ()=> window.scrollTo({ top:0, behavior:"smooth" });
+
+async function handleSubmit(q){
+  q = (q || "").trim();
+  if(!solveJson || !q) return;
+  readPreview.classList.add("hidden");
+  setStatus("Solving…", true);
+  const local = await localSolve(q);
+  // fast path: a clean command / expression the router handled — no LLM, no key needed
+  if(local.ok && !looksLikeNaturalLanguage(q)){ setStatus(null); render(local); scrollTop(); return; }
+  // needs understanding: a parse miss, or clearly natural language
+  if(!getKey()){
     setStatus(null);
-    render(res);
-    window.scrollTo({top:0, behavior:'smooth'});
-  }, 30);
+    showRead(null, "Add your Anthropic key to read this as plain English, or type it as a command like \"derivative of x^2\".", { head:"Type a command, or add a key" });
+    openKeyPanel();
+    return;
+  }
+  setStatus("Understanding…", true);
+  let t;
+  try{ t = await translateWithClaude(q); }
+  catch(err){ setStatus(null); showRead(null, err.message || "Couldn't translate that."); return; }
+  if(!t.found){ setStatus(null); showRead(null, t.error || "Couldn't turn that into a solvable problem — try rephrasing."); return; }
+  $("#q").value = t.query;   // populate the box with the model's command
+  if(t.note){
+    // the model flagged ambiguity -> show the reading and wait for a Solve press (confirm)
+    setStatus(null);
+    showRead(t.latex || "", t.note, { head:"I read this as — check it, then Solve:" });
+    return;
+  }
+  // confident -> auto-solve, with the interpretation shown so a misread is catchable
+  const res = await localSolve(t.query);
+  setStatus(null);
+  showRead(t.latex || "", "", { head:"Understood as:", hint:null });
+  render(res);
+  scrollTop();
 }
 
-$("#ask").addEventListener("submit",(e)=>{ e.preventDefault(); runQuery($("#q").value); });
+$("#ask").addEventListener("submit",(e)=>{ e.preventDefault(); handleSubmit($("#q").value); });
 
 // ---- bring-your-own-key (stored only in the visitor's browser) ----
 const KEY_LS = "exact_anthropic_key";
@@ -353,22 +385,72 @@ keyToggle.addEventListener("click", ()=>{
 
 refreshKeyUI();
 
-// ---- photo → Claude vision OCR (browser-direct, the visitor's key) → confirm → solve ----
-const VISION_MODEL = "claude-haiku-4-5-20251001"; // BYOK default; Haiku matched Sonnet for OCR in testing
-const VISION_MAX_TOKENS = 500;
-const VISION_SYSTEM =
-  "You transcribe a single math problem from an image into a calculus-solver " +
-  "command. You do NOT solve it. Reply with ONLY one JSON object, no prose, no code fences.";
-const VISION_INSTRUCTION =
-  "Read the math problem in this image and output JSON:\n" +
-  '{"found": true|false, "latex": "<problem as LaTeX for display>", ' +
-  '"query": "<problem as ONE solver command>", "note": "<caveat if unclear, else empty>"}\n' +
-  "The query MUST use this grammar: 'derivative of EXPR', 'second derivative of EXPR', " +
-  "'integrate EXPR', 'integrate EXPR from A to B', 'limit of EXPR as x -> A', " +
-  "'taylor series of EXPR', 'solve EQUATION', 'critical points of EXPR', " +
-  "'tangent line to EXPR at x=A', 'factor EXPR', 'simplify EXPR', or just 'EXPR'.\n" +
-  "Notation in query: ^ powers, * multiply, sqrt(), sin/cos/tan/ln/log/exp, pi, e, oo=infinity, |x|=abs.\n" +
-  "If no math problem is present, found=false. Never solve; only transcribe.";
+// ---- LLM "understand" layer (browser-direct, the visitor's key) ----
+// The LLM only turns language (a photo, or plain English) into ONE solver command.
+// It never does the math — SymPy computes and independently verifies every answer.
+const LLM_MODEL = "claude-haiku-4-5-20251001"; // BYOK default; Haiku matched Sonnet in testing
+const LLM_MAX_TOKENS = 500;
+const GRAMMAR =
+  "'derivative of EXPR', 'second derivative of EXPR', 'integrate EXPR', " +
+  "'integrate EXPR from A to B', 'limit of EXPR as x -> A', 'taylor series of EXPR', " +
+  "'solve EQUATION', 'critical points of EXPR', 'tangent line to EXPR at x=A', " +
+  "'factor EXPR', 'simplify EXPR', or just 'EXPR'. " +
+  "Notation: ^ powers, * multiply, sqrt(), sin/cos/tan/ln/log/exp, pi, e, oo=infinity, |x|=abs.";
+
+// One browser-direct call to Anthropic with the visitor's key; returns the model's text.
+async function anthropic(system, content){
+  const key = getKey();
+  if(!key) throw new Error("No API key set.");
+  let resp;
+  try{
+    resp = await fetch("https://api.anthropic.com/v1/messages", {
+      method:"POST",
+      headers:{
+        "x-api-key": key,
+        "anthropic-version":"2023-06-01",
+        "anthropic-dangerous-direct-browser-access":"true",
+        "content-type":"application/json"
+      },
+      body: JSON.stringify({ model:LLM_MODEL, max_tokens:LLM_MAX_TOKENS, system, messages:[{ role:"user", content }] })
+    });
+  }catch(err){ throw new Error("Couldn't reach Anthropic — check your connection."); }
+  if(resp.status === 401){ throw new Error("That API key was rejected — check it in the 🔑 panel."); }
+  if(resp.status === 429){ throw new Error("Anthropic rate-limited that key — wait a moment and retry."); }
+  if(!resp.ok){ throw new Error("AI service error (" + resp.status + ")."); }
+  const data = await resp.json();
+  let text = ((data.content && data.content[0] && data.content[0].text) || "").trim();
+  if(text.startsWith("```")){ const s=text.indexOf("{"), e=text.lastIndexOf("}"); if(s>=0&&e>s) text=text.slice(s,e+1); }
+  return text;
+}
+
+// Parse the model's JSON reply into a command result.
+function parseCmd(text){
+  let p; try{ p = JSON.parse(text); }catch(e){ p = null; }
+  if(!p || p.found === false || !p.query) return { found:false, error:(p && p.note) || "" };
+  return { found:true, query:String(p.query), latex:p.latex?String(p.latex):"", note:p.note?String(p.note):"" };
+}
+
+// Plain English -> ONE solver command. A non-empty `note` means the model wasn't sure.
+async function translateWithClaude(text){
+  const out = await anthropic(
+    "You translate a student's plain-English calculus request into ONE command for a calculus solver. You do NOT solve it. Fill note ONLY if the request is genuinely ambiguous. Reply with ONLY one JSON object, no prose, no code fences.",
+    [{ type:"text", text:
+      "Translate this request into JSON: " +
+      '{"found": true|false, "query": "<ONE solver command>", "latex": "<the problem as LaTeX>", "note": "<caveat ONLY if ambiguous, else empty>"}\n' +
+      "The query MUST use this grammar: " + GRAMMAR + "\n" +
+      "If it isn't a math/calculus request, found=false.\n\nRequest: " + text }]
+  );
+  const r = parseCmd(out);
+  if(!r.found && !r.error) r.error = "Couldn't turn that into a solvable problem — try rephrasing.";
+  return r;
+}
+
+// Cheap local classifier: does this typed input need the LLM, or is it a clean command?
+function looksLikeNaturalLanguage(q){
+  const s = (q || "").toLowerCase();
+  if(s.indexOf("?") >= 0) return true;
+  return /\b(what|whats|find|compute|how|where|which|the area|area between|area under|volume|related rate|word problem|squared|cubed|to the power|divided by|plus|minus|times|please)\b/.test(s);
+}
 
 const photoInput = $("#photo");
 const camBtn = $("#cam");
@@ -385,41 +467,23 @@ photoInput.addEventListener("change", (e)=>{
 });
 
 async function readPhotoWithClaude(dataUrl){
-  const key = getKey();
-  if(!key) throw new Error("No API key set.");
   let mediaType = "image/jpeg", b64 = dataUrl;
   const mm = /^data:(image\/[a-zA-Z+]+);base64,(.*)$/.exec(dataUrl);
   if(mm){ mediaType = mm[1]; b64 = mm[2]; }
-  let resp;
-  try{
-    resp = await fetch("https://api.anthropic.com/v1/messages", {
-      method:"POST",
-      headers:{
-        "x-api-key": key,
-        "anthropic-version":"2023-06-01",
-        "anthropic-dangerous-direct-browser-access":"true",
-        "content-type":"application/json"
-      },
-      body: JSON.stringify({
-        model: VISION_MODEL, max_tokens: VISION_MAX_TOKENS, system: VISION_SYSTEM,
-        messages:[{ role:"user", content:[
-          { type:"image", source:{ type:"base64", media_type:mediaType, data:b64 } },
-          { type:"text", text:VISION_INSTRUCTION }
-        ]}]
-      })
-    });
-  }catch(err){ throw new Error("Couldn't reach Anthropic — check your connection."); }
-  if(resp.status === 401){ throw new Error("That API key was rejected — check it in the 🔑 panel."); }
-  if(resp.status === 429){ throw new Error("Anthropic rate-limited that key — wait a moment and retry."); }
-  if(!resp.ok){ throw new Error("Vision service error (" + resp.status + ")."); }
-  const data = await resp.json();
-  let text = ((data.content && data.content[0] && data.content[0].text) || "").trim();
-  if(text.startsWith("```")){ const s=text.indexOf("{"), e=text.lastIndexOf("}"); if(s>=0&&e>s) text=text.slice(s,e+1); }
-  let parsed; try{ parsed = JSON.parse(text); }catch(e){ parsed = null; }
-  if(!parsed || parsed.found === false || !parsed.query){
-    return { found:false, error:(parsed && parsed.note) || "Couldn't find a clear math problem in that photo." };
-  }
-  return { found:true, query:String(parsed.query), latex:parsed.latex?String(parsed.latex):"", note:parsed.note?String(parsed.note):"" };
+  const text = await anthropic(
+    "You transcribe a single math problem from an image into a calculus-solver command. You do NOT solve it. Reply with ONLY one JSON object, no prose, no code fences.",
+    [
+      { type:"image", source:{ type:"base64", media_type:mediaType, data:b64 } },
+      { type:"text", text:
+        "Read the math problem in this image and output JSON: " +
+        '{"found": true|false, "latex": "<problem as LaTeX>", "query": "<ONE solver command>", "note": "<caveat if unclear, else empty>"}\n' +
+        "The query MUST use this grammar: " + GRAMMAR + "\n" +
+        "If no math problem is present, found=false. Never solve; only transcribe." }
+    ]
+  );
+  const r = parseCmd(text);
+  if(!r.found && !r.error) r.error = "Couldn't find a clear math problem in that photo.";
+  return r;
 }
 
 function downscaleToDataURL(file, maxDim, quality){
@@ -462,17 +526,20 @@ async function handlePhoto(file){
   }
 }
 
-function showRead(latex, message){
+function showRead(latex, message, opts){
+  opts = opts || {};
   readPreview.innerHTML = "";
   const head = document.createElement("div"); head.className="rp-head";
-  head.textContent = latex ? "📷 I read this from your photo:" : "📷 Photo";
+  head.textContent = opts.head || (latex ? "📷 I read this from your photo:" : "📷 Photo");
   readPreview.appendChild(head);
   if(latex){
     const m = document.createElement("div"); m.className="rp-math"; km(latex, m, true);
     readPreview.appendChild(m);
-    const hint = document.createElement("div"); hint.className="rp-hint";
-    hint.innerHTML = "Check it, then press <b>Solve</b> — edit the box above if anything's off.";
-    readPreview.appendChild(hint);
+    if(opts.hint !== null){
+      const hint = document.createElement("div"); hint.className="rp-hint";
+      hint.innerHTML = opts.hint || "Check it, then press <b>Solve</b> — edit the box above if anything's off.";
+      readPreview.appendChild(hint);
+    }
   }
   if(message){
     const n = document.createElement("div"); n.className = latex ? "rp-note" : "rp-hint";

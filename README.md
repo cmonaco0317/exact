@@ -40,22 +40,28 @@ Wolfram-style math: `2x`, `x^2`, `sin x`, `e^x`, `|x|`, `->`, `arctan`, `pi`, `o
 
 ## Photo input & AI features — bring your own key
 
-The verified solver is **100% free, works offline, and needs no account or key.**
-Optional AI features run on your **own** Anthropic API key:
+The verified solver is **100% free, works offline, and needs no account or key** —
+typed commands and expressions are handled entirely locally. Optional AI features run
+on your **own** Anthropic API key:
 
+- **✍️ Plain English** — type a problem in words ("what's the area between y=x² and
+  y=x", "how fast is x³ changing?") and the model turns it into a solver command. It's
+  **local-first**: clean commands never touch the network; the model is only called
+  when the local parser can't handle your phrasing. It shows *how it read you*
+  alongside the answer, and pauses for a confirm when it's unsure.
 - **📷 Photo** — snap a picture; Claude vision transcribes the problem into the
   solver's grammar, you confirm *exactly what it read*, then SymPy solves + verifies.
-  The model only performs perception — it never does the math, so the reliability
-  guarantee is unchanged.
+
+In every case the model only handles **language** — it never does the math, so the
+reliability guarantee is unchanged.
 
 Your key is stored in **your browser only** (`localStorage`) and sent **only to
 Anthropic**, straight from your browser — there is no server in between, and nothing
 is uploaded or stored. Clear it anytime from the 🔑 panel. Get a key from the
 [Anthropic console](https://console.anthropic.com/settings/keys).
 
-> _Coming next: plain-English problem understanding, step-by-step tutoring, and
-> word-problem setup — same rule, the CAS still does and verifies all the math.
-> See [`docs/specs`](docs/specs) for the design._
+> _Coming next: step-by-step tutoring, and word-problem setup — same rule, the CAS
+> still does and verifies all the math. See [`docs/specs`](docs/specs) for the design._
 
 ## Architecture
 
