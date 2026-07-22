@@ -1,8 +1,9 @@
-# Exact — a calculus solver that verifies its own answers
+# Exact — a math solver that verifies its own answers
 
-Type a calculus problem (or snap a photo of one) and get an answer that is
-**computed by a real computer-algebra system and numerically re-checked before it's
-shown** — so the math is never guessed. Runs entirely in your browser.
+Type a math problem (or snap a photo of one) and get an answer that is **computed by a
+real computer-algebra system and numerically re-checked before it's shown** — so the
+math is never guessed. Covers calculus, algebra, linear algebra, differential
+equations, statistics, and more. Runs entirely in your browser.
 
 **▶ [Live demo](https://calc-solver.vercel.app)** · desktop or phone.
 
@@ -33,10 +34,23 @@ something, it says so rather than guessing.
 
 ## What it solves
 
-Derivatives (higher-order & partial), indefinite/definite/improper integrals (with
-steps), limits (one-sided & DNE), Taylor/Maclaurin series, equation solving, critical
-points & extrema, tangent lines, and `simplify` / `factor` / `expand`. Input is
-Wolfram-style math: `2x`, `x^2`, `sin x`, `e^x`, `|x|`, `->`, `arctan`, `pi`, `oo`, …
+- **Calculus** — derivatives (higher-order, partial, gradient, Hessian), indefinite/
+  definite/improper and double/triple integrals (with steps), limits (one-sided & DNE),
+  Taylor/Maclaurin series, summation & products, critical points, tangent lines
+- **Algebra** — single equations, systems (linear & nonlinear), inequalities, `factor` /
+  `expand` / `simplify`, trig identities & equations
+- **Linear algebra** — determinant, inverse, eigenvalues/eigenvectors, rank, rref,
+  transpose, trace — *exact* symbolic output (radicals, not floats)
+- **Differential equations** — ODEs (`solve y'' + y = 0`), verified with `checkodesol`
+- **Discrete & number theory** — primality, prime factorization, gcd/lcm, combinatorics
+- **Statistics** — mean, median, mode, variance, standard deviation, summary
+- **Complex analysis** — real/imaginary part, conjugate, modulus, argument, residues
+- **Vector calculus** — divergence, curl · **Units** — conversions
+- **Plots** — 2D functions, polar, parametric, and interactive 3D surfaces
+
+Input is Wolfram-style math: `2x`, `x^2`, `sin x`, `e^x`, `|x|`, `->`, `pi`, `oo`,
+matrices as `{{1,2},{3,4}}`, `y'`/`y''` for ODE derivatives. Every numeric answer is
+independently re-verified before it's shown.
 
 ## Photo input & AI features — bring your own key
 

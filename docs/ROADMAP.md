@@ -3,6 +3,12 @@
 _Research synthesis, 2026-07-22. Goal: make Exact competitive with Wolfram Alpha in
 **math** capability and scope, without chasing WA's real-world data layer._
 
+> **Status (2026-07-22): all three tiers shipped.** Tier 1 (systems, inequalities,
+> summation, trig, exact/approx), Tier 2 (linear algebra, number theory, statistics,
+> multivariable, polar/parametric plots), and Tier 3 (ODEs, complex analysis, vector
+> calculus, units, 3D plots) are all built, tested, and mobile-verified. The
+> cross-domain step-by-step "capstone" is delivered via the BYOK tutor layer.
+
 ## The thesis
 
 Exact already **owns single-variable calculus** (its credibility anchor). The fastest
