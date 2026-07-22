@@ -111,6 +111,7 @@
   .answer{padding:12px 4px;overflow-x:auto}
   .answer .katex-display{margin:.25em 0}
   .vnote{font-size:12.5px;color:var(--muted);margin:2px 4px 4px}
+  .approx{font-size:13.5px;color:var(--muted);margin:-2px 4px 6px;font-variant-numeric:tabular-nums}
   details.steps{margin:6px 0 2px;border-top:1px dashed var(--line);padding-top:8px}
   details.steps summary{cursor:pointer;font-size:13.5px;color:var(--accent);font-weight:600;list-style:none}
   details.steps summary::-webkit-details-marker{display:none}
@@ -274,6 +275,8 @@ function render(res){
 
   const ans=document.createElement("div"); ans.className="answer";
   km(res.answer_latex||"", ans, true); body.appendChild(ans);
+
+  if(res.approx){ const ap=document.createElement("div"); ap.className="approx"; ap.textContent="≈ "+res.approx; body.appendChild(ap); }
 
   if(res.verify_note){ const vn=document.createElement("div"); vn.className="vnote"; vn.textContent=res.verify_note; body.appendChild(vn); }
 

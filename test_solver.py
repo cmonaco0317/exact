@@ -64,7 +64,15 @@ def _sym_eq(got_str, want):
         return str(got_str).strip() == str(want).strip()
 
 
-def check(query, want=None, contains=None, type_=None, verified=_NOTSET, label=None):
+def check(
+    query,
+    want=None,
+    contains=None,
+    type_=None,
+    verified=_NOTSET,
+    approx=None,
+    label=None,
+):
     """Generic checker for unique-valued results (derivatives, definite integrals,
     limits, series, algebra, evaluate, tangent lines)."""
     r = solve(query)
@@ -87,6 +95,12 @@ def check(query, want=None, contains=None, type_=None, verified=_NOTSET, label=N
         problems.append("type %r != %r" % (r.get("type"), type_))
     if verified is not _NOTSET and r.get("verified") is not verified:
         problems.append("verified=%r expected %r" % (r.get("verified"), verified))
+    if approx is not None:
+        got = r.get("approx", "")
+        if approx and not got:
+            problems.append("expected an approx decimal, got none")
+        if not approx and got:
+            problems.append("unexpected approx %r" % got)
     _record(label or query, problems)
 
 
@@ -284,6 +298,16 @@ def curated():
     check("product k from k=1 to 5", want="120", verified=True)
     check("sum of 1/n^2 from n=1 to oo", want="pi**2/6")
     check("sum 1/2^n from n=0 to oo", want="2")
+
+    # --- trig identities & expansion (Tier 1) ---
+    check("simplify 2 sin(x) cos(x)", want="sin(2*x)", verified=True)
+    check("expand sin(2x)", want="2*sin(x)*cos(x)", verified=True)
+    check("expand cos(x+y)", want="cos(x)*cos(y) - sin(x)*sin(y)", verified=True)
+    check("expand sin(x+y)", want="sin(x)*cos(y) + cos(x)*sin(y)", verified=True)
+
+    # --- exact/approx display (Tier 1) ---
+    check("integrate 1/(1+x^2) from 0 to 2", want="atan(2)", approx=True)
+    check("integrate 3*x^2 from 0 to 2", want="8", approx=False)
 
 
 # --------------------------------------------------------------------- fuzz ----

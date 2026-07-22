@@ -381,9 +381,26 @@ def _describe_integral(rule, depth=0):
 #  Operation handlers.  Each returns a result dict.
 # --------------------------------------------------------------------------- #
 def _result(**kw):
-    base = dict(ok=True, steps=[], verified=None, verify_note="", plot=None)
+    base = dict(ok=True, steps=[], verified=None, verify_note="", plot=None, approx="")
     base.update(kw)
     return base
+
+
+def _num_approx(value):
+    """Short decimal for a concrete real number (the exact/approx display).
+    Returns '' when the value isn't a plain real number, or already reads as one."""
+    try:
+        v = sympify(value) if isinstance(value, str) else value
+        if getattr(v, "free_symbols", set()):
+            return ""
+        if v.is_Integer or v.is_Float:
+            return ""
+        n = N(v, 12)
+        if n.is_real is not True:
+            return ""
+        return "%.8g" % float(n)
+    except Exception:
+        return ""
 
 
 def _do_derivative(expr_str, var_name=None, order=1):
@@ -451,6 +468,7 @@ def _do_integral(expr_str, var_name=None, a=None, b=None):
             input_latex=latex(expr),
             answer_latex=rf"\int_{{{latex(av)}}}^{{{latex(bv)}}} {latex(expr)}\,d{latex(var)} = {latex(val_s)}",
             answer_str=str(val_s),
+            approx=_num_approx(val_s),
             steps=steps,
             verified=verified,
             verify_note=note,
@@ -534,6 +552,7 @@ def _do_limit(expr_str, var_name, point_str, direction=None):
         input_latex=latex(expr),
         answer_latex=rf"\lim_{{{latex(var)}\to {latex(point)}}} {latex(expr)} = {latex(val_s)}",
         answer_str=str(val_s),
+        approx=_num_approx(val_s),
         steps=steps,
         verified=verified,
         verify_note=note,
@@ -686,8 +705,15 @@ def _do_tangent(expr_str, var_name, at_str):
 
 def _do_algebra(kind, expr_str):
     expr = _P(expr_str)
-    fn = {"simplify": simplify, "factor": factor, "expand": expand}[kind]
-    out = fn(expr)
+    if kind == "simplify":
+        out = simplify(expr)
+        t = sp.trigsimp(expr)  # prefer the trig-simpler form when it's shorter
+        if sp.count_ops(t) < sp.count_ops(out):
+            out = t
+    elif kind == "expand":
+        out = sp.expand_trig(expand(expr))  # also expands sin(2x), sin(x+y), etc.
+    else:  # factor
+        out = factor(expr)
     # verify: original and result are equal as functions
     var = _pick_var(expr)
     diffz = simplify(expr - out)
@@ -697,6 +723,7 @@ def _do_algebra(kind, expr_str):
         input_latex=latex(expr),
         answer_latex=rf"{latex(expr)} = {latex(out)}",
         answer_str=str(out),
+        approx=_num_approx(out),
         steps=[rf"{kind.title()}: {latex(expr)} = {latex(out)}"],
         verified=verified,
         verify_note="algebraically equivalent to the input" if verified else "",
@@ -902,6 +929,7 @@ def _do_summation(expr_str, var_name, a, b, is_product=False):
         input_latex=tex,
         answer_latex=rf"{tex} = {latex(val_s)}",
         answer_str=str(val_s),
+        approx=_num_approx(val_s),
         steps=[rf"{tex} = {latex(val_s)}"],
         verified=verified,
         verify_note=note,
@@ -1198,7 +1226,7 @@ def solve(query):
             return _do_solve(q[q.lower().find(m.group(1)) :])
 
         # algebra helpers
-        m = re.search(r"^(simplify|factor|expand)\s+(.+)$", ql)
+        m = re.search(r"^(simplify|factor|expand)\s+(?:trig\s+)?(.+)$", ql)
         if m:
             return _do_algebra(m.group(1), q[q.lower().find(m.group(2)) :])
 
