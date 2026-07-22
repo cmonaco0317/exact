@@ -361,6 +361,12 @@ def curated():
     check("parametric plot x = cos(t), y = sin(t)", has_plot=True)
     check("parametric plot x = t^2, y = t^3 for t=-2 to 2", has_plot=True)
 
+    # --- differential equations (Tier 3) ---
+    check("solve y'' + y = 0", contains=["sin(x)", "cos(x)"], verified=True)
+    check("solve y' = y", contains="exp(x)", verified=True)
+    check("solve y' + 2*y = 0", contains="exp(-2*x)", verified=True)
+    check("solve y' = x*y", contains="exp(x**2/2)", verified=True)
+
 
 # --------------------------------------------------------------------- fuzz ----
 def fuzz(n_exprs=400, seed=12345):

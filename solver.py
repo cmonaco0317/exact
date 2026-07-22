@@ -1428,6 +1428,61 @@ def _do_parametric(body):
 
 
 # --------------------------------------------------------------------------- #
+#  Differential equations (Tier-3 scope)
+# --------------------------------------------------------------------------- #
+def _ode_prep(s, dep, ind):
+    """Rewrite y'' / y' / y into Derivative(y(x),x,2) / Derivative(y(x),x) / y(x)."""
+    s = re.sub(rf"\b{dep}\s*''", f"Derivative({dep}({ind}),{ind},2)", s)
+    s = re.sub(rf"\b{dep}\s*'", f"Derivative({dep}({ind}),{ind})", s)
+    s = re.sub(rf"\b{dep}\b(?!\s*\()", f"{dep}({ind})", s)  # standalone y -> y(x)
+    return s
+
+
+def _do_ode(eq_str, dep="y", ind="x"):
+    y = sp.Function(dep)
+    x = Symbol(ind)
+    loc = dict(_LOCALS)
+    loc.update({dep: y, ind: x, "Derivative": Derivative})
+    prepped = _ode_prep(eq_str, dep, ind)
+
+    def _p(part):
+        return parse_expr(part, transformations=_TRANSFORMS, local_dict=loc)
+
+    if "=" in prepped:
+        lhs_s, _, rhs_s = prepped.partition("=")
+        eq = Eq(_p(lhs_s), _p(rhs_s))
+    else:
+        eq = Eq(_p(prepped), S.Zero)
+    sol = sp.dsolve(eq, y(x))
+    sols = sol if isinstance(sol, list) else [sol]
+    try:
+        chk = sp.checkodesol(eq, sol)
+        verified = all(c[0] for c in chk) if isinstance(chk, list) else bool(chk[0])
+    except Exception:
+        verified = None
+    ans = r"\\".join(latex(s) for s in sols)
+    if len(sols) > 1:
+        ans = r"\begin{gathered}" + ans + r"\end{gathered}"
+    return _result(
+        type="differential equation",
+        input_latex=latex(eq),
+        answer_latex=ans,
+        answer_str="; ".join(str(s) for s in sols),
+        steps=[rf"\text{{Solve the ODE}}\ {latex(eq)}"],
+        verified=verified,
+        verify_note=(
+            "confirmed: the solution satisfies the ODE"
+            if verified
+            else (
+                "the solution did not check out"
+                if verified is False
+                else "computed symbolically"
+            )
+        ),
+    )
+
+
+# --------------------------------------------------------------------------- #
 #  Plot spec (numeric samples computed here; UI just draws them)
 # --------------------------------------------------------------------------- #
 def _samples(expr, var, lo, hi, n=241):
@@ -1720,6 +1775,15 @@ def solve(query):
         )
         if m:
             return _do_critical(q[q.lower().find(m.group(1)) :])
+
+        # differential equation: solve an ODE (contains y', y'', f', ...)
+        if re.search(r"\bsolve\b", ql) and re.search(r"[a-z]\s*'", q):
+            dep = re.search(r"([a-z])\s*'", q).group(1)
+            ind = (
+                "t" if (re.search(r"\bt\b", q) and not re.search(r"\bx\b", q)) else "x"
+            )
+            body = re.sub(r"^\s*solve\s+", "", q, flags=re.IGNORECASE)
+            return _do_ode(body, dep=dep, ind=ind)
 
         # inequality (bare, or "solve ..."):  x^2 > 4 ,  solve 2x - 1 <= 5
         _iq = re.sub(r"->", "  ", q)  # keep the limit arrow from looking like '>'
