@@ -9,6 +9,8 @@
 # python
 __pycache__/
 *.py[cod]
+venv/
+.venv/
 
 # node (if tooling is added later)
 node_modules/

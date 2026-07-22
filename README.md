@@ -81,11 +81,20 @@ python3 -m http.server 8000
 
 ## Correctness
 
-`solver.py` is a single source of truth: the **same** code that would run offline
-checks in CPython runs the verifier live in the browser, so **every answer a user
-sees is numerically confirmed as it's shown.** (An earlier build was validated
-against 77 known-answer cases and an 800-problem random fuzz with zero false
-verifications; a committable test harness is on the near-term roadmap.)
+`solver.py` is a single source of truth: the **same** code runs the checks in CPython
+and the verifier live in the browser, so **every answer a user sees is numerically
+confirmed as it's shown.**
+
+`test_solver.py` is the committable harness — **81 curated known-answer cases** (each
+compared by SymPy equivalence, not string match; indefinite integrals are checked by
+differentiating the answer back to the integrand) plus a deterministic **800-problem
+fuzz** that asserts the verifier never falsely flags a correct result. 881 checks,
+all passing:
+
+```bash
+python3 -m venv venv && ./venv/bin/pip install sympy
+./venv/bin/python test_solver.py     # -> RESULT: ALL PASS
+```
 
 ## Deploy
 

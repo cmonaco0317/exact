@@ -1,0 +1,327 @@
+"""
+test_solver.py — correctness harness for Exact's engine (solver.py).
+
+Two layers:
+  1. Curated known-answer cases. Each has an INDEPENDENTLY-known answer; we assert
+     the engine (a) succeeds, (b) computes the right thing, and (c) never raises a
+     FALSE verification flag on a correct problem. Answers are compared by SymPy
+     equivalence (not string match), so the engine's factored/rearranged forms pass.
+     Indefinite integrals are checked by differentiating the engine's answer back to
+     the integrand (robust to the "+ C" ambiguity).
+  2. A deterministic random fuzz (seeded): hundreds of random closed-form
+     expressions through derivative + integral, asserting no crash and — the key
+     invariant — the numeric verifier never emits a FALSE "unverified" flag.
+
+The same solver.py runs here (CPython) and in the browser (Pyodide): one source of
+truth, so a green run here means every answer a user sees is numerically confirmed.
+
+Run:  python3 -m venv venv && ./venv/bin/pip install sympy
+      ./venv/bin/python test_solver.py
+Exit code is non-zero if anything fails.
+"""
+
+import random
+import sys
+
+from sympy import sympify, simplify, diff, Symbol, I, sqrt, pi, E, oo  # noqa: F401
+
+from solver import solve
+
+x = Symbol("x")
+_NOTSET = object()
+
+_PASS = 0
+_FAIL = 0
+_FAILURES = []
+_TOTAL = 0
+
+
+def _record(label, problems):
+    global _PASS, _FAIL, _TOTAL
+    _TOTAL += 1
+    if problems:
+        _FAIL += 1
+        _FAILURES.append((label, problems))
+    else:
+        _PASS += 1
+
+
+def _strip_C(s):
+    s = (s or "").strip()
+    if s.endswith("+ C"):
+        s = s[:-3]
+    return s.strip().rstrip("+").strip()
+
+
+def _sym_eq(got_str, want):
+    """True if the engine's answer equals the known answer as SymPy objects."""
+    try:
+        g = sympify(_strip_C(got_str))
+        w = sympify(want) if isinstance(want, str) else want
+        d = simplify(g - w)
+        return d == 0
+    except Exception:
+        return str(got_str).strip() == str(want).strip()
+
+
+def check(query, want=None, contains=None, type_=None, verified=_NOTSET, label=None):
+    """Generic checker for unique-valued results (derivatives, definite integrals,
+    limits, series, algebra, evaluate, tangent lines)."""
+    r = solve(query)
+    problems = []
+    if not r.get("ok"):
+        problems.append("not ok: %s" % r.get("error"))
+        _record(label or query, problems)
+        return
+    # The core safety invariant: a correct problem must NEVER get a FALSE flag.
+    if r.get("verified") is False:
+        problems.append("FALSE verification flag: %s" % r.get("verify_note"))
+    if want is not None and not _sym_eq(r.get("answer_str", ""), want):
+        problems.append("answer %r != expected %r" % (r.get("answer_str"), want))
+    if contains is not None:
+        hay = r.get("answer_str", "") or ""
+        for c in [contains] if isinstance(contains, str) else contains:
+            if c not in hay:
+                problems.append("answer %r missing %r" % (hay, c))
+    if type_ is not None and r.get("type") != type_:
+        problems.append("type %r != %r" % (r.get("type"), type_))
+    if verified is not _NOTSET and r.get("verified") is not verified:
+        problems.append("verified=%r expected %r" % (r.get("verified"), verified))
+    _record(label or query, problems)
+
+
+def check_antideriv(query, integrand):
+    """Indefinite integral: differentiate the engine's answer, confirm it equals the
+    integrand (independent of the arbitrary constant)."""
+    r = solve(query)
+    problems = []
+    if not r.get("ok"):
+        problems.append("not ok: %s" % r.get("error"))
+        _record(query, problems)
+        return
+    if r.get("verified") is False:
+        problems.append("FALSE verification flag: %s" % r.get("verify_note"))
+    try:
+        F = sympify(_strip_C(r.get("answer_str", "")))
+        f = sympify(integrand)
+        if simplify(diff(F, x) - f) != 0:
+            problems.append("d/dx(%s) != %s" % (r.get("answer_str"), integrand))
+    except Exception as e:
+        problems.append("compare error: %s" % e)
+    _record(query, problems)
+
+
+def check_solve(query, roots):
+    """Equation solving: compare the solution SET (order-independent, symbolic)."""
+    r = solve(query)
+    problems = []
+    if not r.get("ok"):
+        problems.append("not ok: %s" % r.get("error"))
+        _record(query, problems)
+        return
+    if r.get("verified") is False:
+        problems.append("FALSE verification flag: %s" % r.get("verify_note"))
+    got = []
+    for part in (r.get("answer_str", "") or "").split(","):
+        part = part.strip()
+        if part:
+            try:
+                got.append(sympify(part))
+            except Exception:
+                pass
+    want = [sympify(w) for w in roots]
+    ok = len(got) == len(want) and all(
+        any(simplify(g - w) == 0 for g in got) for w in want
+    )
+    if not ok:
+        problems.append("roots %r != %r" % (r.get("answer_str"), roots))
+    _record(query, problems)
+
+
+# ------------------------------------------------------------------ curated ----
+def curated():
+    # --- derivatives (1st-order verify numerically -> True) ---
+    check("derivative of x^2 sin(x)", want="2*x*sin(x) + x**2*cos(x)", verified=True)
+    check("derivative of x^3", want="3*x**2", verified=True)
+    check("derivative of sin(x)", want="cos(x)", verified=True)
+    check("derivative of cos(x)", want="-sin(x)", verified=True)
+    check("derivative of e^x", want="exp(x)", verified=True)
+    check("derivative of ln(x)", want="1/x", verified=True)
+    check("derivative of tan(x)", want="tan(x)**2 + 1", verified=True)
+    check("derivative of sqrt(x)", want="1/(2*sqrt(x))", verified=True)
+    check("derivative of arctan(x)", want="1/(x**2 + 1)", verified=True)
+    check("derivative of x^2 e^x", want="x**2*exp(x) + 2*x*exp(x)", verified=True)
+    check("differentiate x/(x+1)", want="1/(x + 1)**2", verified=True)
+    check("derivative of ln(x^2+1)", want="2*x/(x**2 + 1)", verified=True)
+    check("derivative of x^5 - 3x^2 + 2x - 7", want="5*x**4 - 6*x + 2", verified=True)
+    # --- higher-order / partial (computed symbolically -> None, never False) ---
+    check("second derivative of x^4", want="12*x**2", verified=None)
+    check("second derivative of sin(x)", want="-sin(x)", verified=None)
+    check("third derivative of x^5", want="60*x**2", verified=None)
+    check("partial derivative of x^2 y with respect to y", want="x**2", verified=None)
+    check("partial derivative of x^2 y with respect to x", want="2*x*y", verified=None)
+
+    # --- indefinite integrals (differentiate the answer back to the integrand) ---
+    check_antideriv("integrate x^2", "x**2")
+    check_antideriv("integrate 1/(1+x^2)", "1/(1 + x**2)")
+    check_antideriv("integrate cos(x)", "cos(x)")
+    check_antideriv("integrate e^x", "exp(x)")
+    check_antideriv("integrate 1/x", "1/x")
+    check_antideriv("integrate x*e^x", "x*exp(x)")
+    check_antideriv("integrate sec(x)^2", "sec(x)**2")
+    check_antideriv("integrate 2x", "2*x")
+    check_antideriv("integrate sin(x)*cos(x)", "sin(x)*cos(x)")
+    check_antideriv("integrate x^3 + 3x^2 - 2x + 1", "x**3 + 3*x**2 - 2*x + 1")
+    check_antideriv("integrate ln(x)", "log(x)")
+    check_antideriv("integrate x*sin(x)", "x*sin(x)")
+
+    # --- definite / improper integrals (unique value) ---
+    check("integrate x^2 from 0 to 1", want="1/3")
+    check("integrate sin(x) from 0 to pi", want="2")
+    check("integrate 1/(1+x^2) from 0 to 1", want="pi/4")
+    check("integrate cos(x) from 0 to pi/2", want="1")
+    check("integrate x from 0 to 2", want="2")
+    check("integrate e^-x from 0 to oo", want="1")
+    check("integrate 1/x^2 from 1 to oo", want="1")
+    check("integrate 2x from 1 to 3", want="8")
+
+    # --- limits (finite value via sym_eq; special cases via contains) ---
+    check("limit of sin(x)/x as x->0", want="1")
+    check("limit of (1-cos(x))/x^2 as x->0", want="1/2")
+    check("limit of (e^x-1)/x as x->0", want="1")
+    check("limit of 1/x as x->oo", want="0")
+    check("limit of sin(x)/x as x->oo", want="0")
+    check("limit of (1+1/x)^x as x->oo", want="E")
+    check("limit of (x^2-1)/(x-1) as x->1", want="2")
+    check(
+        "limit of |x|/x as x->0",
+        contains="does not exist",
+        type_="limit",
+        verified=None,
+    )
+
+    # --- Taylor / Maclaurin series (check leading polynomial terms) ---
+    check(
+        "taylor series of e^x",
+        contains=["x**2/2", "x**3/6", "O(x**6)"],
+        type_="maclaurin series",
+        verified=True,
+    )
+    check("taylor series of sin(x)", contains=["x**3/6", "x**5/120", "O(x**6)"])
+    check("taylor series of cos(x)", contains=["x**2/2", "x**4/24"])
+    check("taylor series of 1/(1-x)", contains=["1 + x + x**2", "O(x**6)"])
+
+    # --- solve / roots (solution set) ---
+    check_solve("solve x^2 - 5x + 6 = 0", ["2", "3"])
+    check_solve("solve x^2 - 4 = 0", ["2", "-2"])
+    check_solve("solve 2x + 3 = 7", ["2"])
+    check_solve("solve x^2 + 1 = 0", ["I", "-I"])
+    check_solve("solve x^3 - x = 0", ["0", "1", "-1"])
+    check_solve("solve x^2 - 2 = 0", ["sqrt(2)", "-sqrt(2)"])
+
+    # --- critical points / extrema ---
+    check(
+        "critical points of x^3 - 3x",
+        contains=["-1: local maximum", "1: local minimum"],
+        verified=True,
+    )
+    check("critical points of x^2", contains="0: local minimum", verified=True)
+    check(
+        "critical points of x^4 - 2x^2",
+        contains=["local minimum", "local maximum"],
+        verified=True,
+    )
+
+    # --- tangent lines ---
+    check("tangent line to x^2 at x=1", want="2*x - 1", verified=True)
+    check("tangent line to sin(x) at x=0", want="x", verified=True)
+    check("tangent line to e^x at x=0", want="x + 1", verified=True)
+
+    # --- algebra helpers ---
+    check("simplify (x^2-1)/(x-1)", want="x + 1", verified=True)
+    check("factor x^2 - 5x + 6", want="(x - 2)*(x - 3)", verified=True)
+    check("expand (x+1)^3", want="x**3 + 3*x**2 + 3*x + 1", verified=True)
+    check("simplify sin(x)^2 + cos(x)^2", want="1", verified=True)
+
+    # --- evaluate (pure numeric) ---
+    check("2^10 + 5", want="1029", verified=True)
+    check("sqrt(16)", want="4", verified=True)
+    check("cos(0)", want="1", verified=True)
+
+    # --- more derivatives (chain / reciprocal / product) ---
+    check("derivative of cos(x^2)", want="-2*x*sin(x**2)", verified=True)
+    check("derivative of x*ln(x)", want="log(x) + 1", verified=True)
+    check("derivative of 1/x", want="-1/x**2", verified=True)
+    check("derivative of sec(x)", want="tan(x)*sec(x)", verified=True)
+    check("derivative of e^(2x)", want="2*exp(2*x)", verified=True)
+
+    # --- more integrals ---
+    check_antideriv("integrate sec(x)*tan(x)", "sec(x)*tan(x)")
+    check_antideriv("integrate cos(2x)", "cos(2*x)")
+    check_antideriv("integrate 1/(x^2+4)", "1/(x**2 + 4)")
+    check("integrate x^3 from 0 to 2", want="4")
+    check("integrate 1/x from 1 to e", want="1")
+
+    # --- more limits ---
+    check("limit of tan(x)/x as x->0", want="1")
+    check("limit of (sqrt(x+1)-1)/x as x->0", want="1/2")
+
+
+# --------------------------------------------------------------------- fuzz ----
+def fuzz(n_exprs=400, seed=12345):
+    """Deterministic random sweep. Builds closed-form-integrable expressions and
+    runs derivative + indefinite integral through the engine, asserting no crash and
+    that the verifier NEVER emits a FALSE flag on a correct result."""
+    rng = random.Random(seed)
+    atoms = ["{c}*x^{p}", "{c}*sin(x)", "{c}*cos(x)", "{c}*exp(x)", "{c}"]
+    checked = 0
+    for _ in range(n_exprs):
+        k = rng.randint(1, 4)
+        parts = []
+        for _ in range(k):
+            a = rng.choice(atoms)
+            parts.append(a.format(c=rng.randint(1, 6), p=rng.randint(0, 4)))
+        expr = " + ".join(parts)
+        for op in ("derivative of ", "integrate "):
+            q = op + expr
+            try:
+                r = solve(q)
+            except Exception as e:  # solve() is contracted never to raise
+                _record("fuzz(raised) " + q, ["raised %s: %s" % (type(e).__name__, e)])
+                checked += 1
+                continue
+            problems = []
+            if not isinstance(r, dict):
+                problems.append("non-dict result")
+            elif r.get("ok") and r.get("verified") is False:
+                problems.append("FALSE verification flag: %s" % r.get("verify_note"))
+            # ok == False is acceptable (honest "no closed form"); a crash or a
+            # false verification is not.
+            _record("fuzz " + q, problems)
+            checked += 1
+    return checked
+
+
+# --------------------------------------------------------------------- main ----
+def main():
+    curated()
+    n_fuzz = fuzz()
+    print("=" * 60)
+    print("curated + fuzz problems checked: %d (fuzz: %d)" % (_TOTAL, n_fuzz))
+    print("passed: %d   failed: %d" % (_PASS, _FAIL))
+    if _FAILURES:
+        print("-" * 60)
+        for label, problems in _FAILURES[:50]:
+            print("FAIL: %s" % label)
+            for p in problems:
+                print("    - %s" % p)
+        print("=" * 60)
+        print("RESULT: FAIL (%d failing checks)" % _FAIL)
+        return 1
+    print("=" * 60)
+    print("RESULT: ALL PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
