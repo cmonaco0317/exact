@@ -709,11 +709,33 @@ def _do_expression(expr_str):
     expr = _P(expr_str)
     if not expr.free_symbols:
         val = simplify(expr)
+        # 0.15*80 -> 12.0 -> 12 : collapse integer-valued floats to a clean integer.
+        if val.is_Float and val == int(val):
+            val = sp.Integer(int(val))
+        # A pure-numeric input has already collapsed to its value at parse time, so
+        # "expr = val" would be redundant ("12.0 = 12"); show the clean value once.
+        if val.is_Float:
+            answer_latex = answer_str = "%.10g" % float(
+                val
+            )  # compact non-integer decimal
+        else:
+            approx = ""
+            if (
+                not val.is_Integer
+            ):  # rationals / irrationals get a decimal approximation
+                try:
+                    d = "%.10g" % float(N(val, 12))
+                    if d != latex(val):
+                        approx = rf" \approx {d}"
+                except Exception:
+                    pass
+            answer_latex = rf"{latex(val)}{approx}"
+            answer_str = str(val)
         return _result(
             type="evaluate",
-            input_latex=latex(expr),
-            answer_latex=rf"{latex(expr)} = {latex(val)} \approx {N(val, 12)}",
-            answer_str=str(val),
+            input_latex="",
+            answer_latex=answer_latex,
+            answer_str=answer_str,
             verified=True,
             verify_note="exact value",
             steps=[],

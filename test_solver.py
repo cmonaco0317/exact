@@ -247,6 +247,8 @@ def curated():
     check("2^10 + 5", want="1029", verified=True)
     check("sqrt(16)", want="4", verified=True)
     check("cos(0)", want="1", verified=True)
+    check("0.15*80", want="12", verified=True)  # integer-valued float -> clean integer
+    check("0.25 * 8", want="2", verified=True)
 
     # --- more derivatives (chain / reciprocal / product) ---
     check("derivative of cos(x^2)", want="-2*x*sin(x**2)", verified=True)
