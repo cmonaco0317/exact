@@ -1,0 +1,6 @@
+# Dev-only — not part of the static site
+venv/
+.venv/
+__pycache__/
+*.pyc
+.git/
