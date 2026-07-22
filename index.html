@@ -106,6 +106,15 @@
   .step{padding:8px 4px;border-bottom:1px solid var(--line);overflow-x:auto}
   .step:last-child{border-bottom:0}
   .num{color:var(--muted);font-size:12px;margin-right:4px}
+  .teach{margin-top:10px;border-top:1px dashed var(--line);padding-top:10px}
+  .teachbtn{border:1px solid var(--line);background:var(--panel-2);color:var(--accent);font-weight:600;font-size:13.5px;border-radius:10px;padding:7px 12px;cursor:pointer}
+  .teachbtn:hover:not(:disabled){border-color:var(--accent)}
+  .teachbtn:disabled{opacity:.6;cursor:default}
+  .teachout{margin-top:6px}
+  .teachout .teachlbl{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:700;margin-bottom:5px}
+  .teachout p{margin:0 0 8px;font-size:14px;line-height:1.6;color:var(--ink);white-space:pre-wrap}
+  .teachout p:last-child{margin-bottom:0}
+  .teachout .teacherr{color:var(--warn)}
   .plot{width:100%;height:300px;margin-top:8px}
   .err{color:#c0392b;background:rgba(192,57,43,.08);border:1px solid rgba(192,57,43,.25);border-radius:12px;padding:12px 14px;font-size:14.5px}
   @media (prefers-color-scheme:dark){.err{color:#ff8a7a;background:rgba(255,90,80,.08);border-color:rgba(255,90,80,.25)}}
@@ -274,6 +283,30 @@ function render(res){
     setTimeout(()=>{ try{ drawPlot(pd, res.plot); }catch(e){ pd.remove(); } }, 0);
   }
 
+  // Teach: on-demand tutor explanation of this verified result (not for bare evaluations)
+  if(res.ok && res.answer_str && res.type !== "evaluate"){
+    const teach=document.createElement("div"); teach.className="teach";
+    const btn=document.createElement("button"); btn.type="button"; btn.className="teachbtn"; btn.textContent="✨ Explain like a tutor";
+    const out=document.createElement("div"); out.className="teachout hidden";
+    btn.onclick=async ()=>{
+      if(!getKey()){ openKeyPanel("Add a key to get a plain-English explanation."); return; }
+      btn.disabled=true; btn.textContent="Thinking…";
+      try{
+        const txt=await teachWithClaude(res);
+        out.innerHTML="";
+        const lbl=document.createElement("div"); lbl.className="teachlbl"; lbl.textContent="Tutor"; out.appendChild(lbl);
+        String(txt||"").split(/\n\n+/).forEach(p=>{ const t=p.trim(); if(!t) return;
+          const pel=document.createElement("p"); pel.textContent=t; out.appendChild(pel); });
+        if(!out.querySelector("p")){ const pel=document.createElement("p"); pel.textContent=String(txt||"").trim(); out.appendChild(pel); }
+        out.classList.remove("hidden"); btn.classList.add("hidden");
+      }catch(err){
+        out.innerHTML=""; const e=document.createElement("p"); e.className="teacherr"; e.textContent=err.message||"Couldn't get an explanation."; out.appendChild(e);
+        out.classList.remove("hidden"); btn.disabled=false; btn.textContent="✨ Explain like a tutor";
+      }
+    };
+    teach.appendChild(btn); teach.appendChild(out); body.appendChild(teach);
+  }
+
   card.appendChild(body);
   results.prepend(card);
 }
@@ -399,7 +432,8 @@ const GRAMMAR =
   "Notation: ^ powers, * multiply, sqrt(), sin/cos/tan/ln/log/exp, pi, e, oo=infinity, |x|=abs.";
 
 // One browser-direct call to Anthropic with the visitor's key; returns the model's text.
-async function anthropic(system, content){
+async function anthropic(system, content, opts){
+  opts = opts || {};
   const key = getKey();
   if(!key) throw new Error("No API key set.");
   let resp;
@@ -412,7 +446,7 @@ async function anthropic(system, content){
         "anthropic-dangerous-direct-browser-access":"true",
         "content-type":"application/json"
       },
-      body: JSON.stringify({ model:LLM_MODEL, max_tokens:LLM_MAX_TOKENS, system, messages:[{ role:"user", content }] })
+      body: JSON.stringify({ model:(opts.model||LLM_MODEL), max_tokens:(opts.maxTokens||LLM_MAX_TOKENS), system, messages:[{ role:"user", content }] })
     });
   }catch(err){ throw new Error("Couldn't reach Anthropic — check your connection."); }
   if(resp.status === 401){ throw new Error("That API key was rejected — check it in the 🔑 panel."); }
@@ -451,6 +485,23 @@ function looksLikeNaturalLanguage(q){
   const s = (q || "").toLowerCase();
   if(s.indexOf("?") >= 0) return true;
   return /\b(what|whats|find|compute|how|where|which|the area|area between|area under|volume|related rate|word problem|squared|cubed|to the power|divided by|plus|minus|times|please)\b/.test(s);
+}
+
+// ---- Teach: narrate an ALREADY-VERIFIED answer (the model never changes the number) ----
+const TEACH_MODEL = "claude-sonnet-5"; // a stronger model teaches better; the visitor pays
+async function teachWithClaude(res){
+  const problem = res.input_latex || res.type || "";
+  const steps = (res.steps || []).slice(0, 12).join("  ;  ");
+  const msg =
+    "Problem (type: " + (res.type || "expression") + "): " + problem + "\n" +
+    "VERIFIED correct answer: " + (res.answer_str || res.answer_latex || "") + "\n" +
+    (steps ? "Mechanical steps: " + steps + "\n" : "") +
+    "\nExplain the approach and the intuition so a student really gets it.";
+  return await anthropic(
+    "You are a sharp, friendly math tutor. You are given a problem and its ALREADY-VERIFIED correct answer (computed by a computer-algebra system). Explain the approach and intuition concisely — no fluff, 2-4 short paragraphs. Write plain prose (and at most simple hyphen bullet lines) — NO markdown: no #, no **bold**, no headers. Use simple ascii math (x^2, sqrt, d/dx), not LaTeX. The answer is FIXED and correct: never state a different final answer.",
+    [{ type:"text", text: msg }],
+    { model: TEACH_MODEL, maxTokens: 800 }
+  );
 }
 
 const photoInput = $("#photo");
