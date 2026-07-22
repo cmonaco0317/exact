@@ -12,6 +12,7 @@
     --bg:#f7f8fa; --panel:#ffffff; --panel-2:#f1f3f7; --ink:#141922; --muted:#5c6a7e;
     --line:#e3e8ef; --accent:#3b6df6; --accent-ink:#fff;
     --ok:#159a5b; --ok-bg:#e7f6ee; --warn:#b7791f; --warn-bg:#fdf3e0; --neutral:#64748b; --neutral-bg:#eef1f6;
+    --setup:#7c5cff; --setup-bg:#efeaff;
     --shadow:0 1px 2px rgba(16,24,40,.05),0 8px 24px rgba(16,24,40,.06);
   }
   @media (prefers-color-scheme: dark){
@@ -20,6 +21,7 @@
       --line:#233145; --accent:#5b86f8; --accent-ink:#fff;
       --ok:#3ad089; --ok-bg:#0f2a1e;
       --warn:#f0b429; --warn-bg:#2a2110; --neutral:#94a3b8; --neutral-bg:#182234;
+      --setup:#a78bfa; --setup-bg:#241d3a;
       --shadow:0 1px 2px rgba(0,0,0,.3),0 12px 32px rgba(0,0,0,.35);
     }
   }
@@ -95,6 +97,15 @@
   .badge.ok{color:var(--ok);background:var(--ok-bg)}
   .badge.warn{color:var(--warn);background:var(--warn-bg)}
   .badge.neutral{color:var(--neutral);background:var(--neutral-bg)}
+  .badge.setup{color:var(--setup);background:var(--setup-bg)}
+  .badge.mini{font-size:11px;padding:2px 7px;margin-left:8px;vertical-align:middle}
+  .setupcap{font-size:12.5px;color:var(--setup);background:var(--setup-bg);border-radius:8px;padding:7px 10px;margin:2px 4px 6px}
+  details.extend .setuptext{padding:8px 4px;color:var(--muted);font-size:13.5px;line-height:1.55;white-space:pre-wrap;border-bottom:1px solid var(--line)}
+  .estep{padding:9px 4px;border-bottom:1px solid var(--line)}
+  .estep:last-child{border-bottom:0}
+  .estep-lbl{font-size:13px;color:var(--muted);margin-bottom:3px}
+  .estep-val{overflow-x:auto}
+  .estep-val.estep-err{color:var(--warn);font-size:13px}
   .card .body{padding:8px 16px 16px}
   .prob{color:var(--muted);font-size:13px;margin:8px 2px 2px}
   .answer{padding:12px 4px;overflow-x:auto}
@@ -311,6 +322,47 @@ function render(res){
   results.prepend(card);
 }
 
+// Phase 3 (Extend): render a word-problem result — verified answer + ⚙ badge up top,
+// the AI setup + per-step verified computations tucked into an expandable section.
+function renderExtend(t, stepResults){
+  const card=document.createElement("div"); card.className="card";
+  const head=document.createElement("div"); head.className="head";
+  head.innerHTML='<span class="kind"></span><span class="badge setup"></span>';
+  head.querySelector(".kind").textContent="word problem";
+  head.querySelector(".badge").textContent="⚙ Setup by AI";
+  card.appendChild(head);
+
+  const body=document.createElement("div"); body.className="body";
+  const last = stepResults.length ? stepResults[stepResults.length-1].result : null;
+  const ans=document.createElement("div"); ans.className="answer";
+  km((last && last.ok && last.answer_latex) ? last.answer_latex : "\\text{see the steps below}", ans, true);
+  body.appendChild(ans);
+
+  const cap=document.createElement("div"); cap.className="setupcap";
+  cap.textContent="Set up by AI — each computation below is independently verified; the setup itself is not.";
+  body.appendChild(cap);
+
+  const d=document.createElement("details"); d.className="steps extend";
+  const sm=document.createElement("summary"); sm.textContent="How this was set up"; d.appendChild(sm);
+  if(t.setup){ const su=document.createElement("div"); su.className="setuptext"; su.textContent=t.setup; d.appendChild(su); }
+  stepResults.forEach((s,i)=>{
+    const row=document.createElement("div"); row.className="estep";
+    const lbl=document.createElement("div"); lbl.className="estep-lbl"; lbl.textContent=(i+1)+". "+(s.label||s.command); row.appendChild(lbl);
+    const val=document.createElement("div"); val.className="estep-val";
+    const r=s.result;
+    if(r && r.ok){
+      const m=document.createElement("span"); km(r.answer_latex||r.answer_str||"", m, false); val.appendChild(m);
+      const [bc,bt]=badge(r.verified); const b=document.createElement("span"); b.className="badge "+bc+" mini"; b.textContent=bt; val.appendChild(b);
+    } else {
+      val.classList.add("estep-err"); val.textContent=(r && r.error) ? r.error : "couldn't compute this step";
+    }
+    row.appendChild(val); d.appendChild(row);
+  });
+  body.appendChild(d);
+  card.appendChild(body);
+  results.prepend(card);
+}
+
 // Local-first solve. The regex engine handles clean input instantly (free, offline);
 // the LLM only runs on a parse miss or clearly plain-English input (Phase 1: Understand).
 const localSolve = (q)=> new Promise((resolve)=>{
@@ -342,6 +394,16 @@ async function handleSubmit(q){
   try{ t = await translateWithClaude(q); }
   catch(err){ setStatus(null); showRead(null, err.message || "Couldn't translate that."); return; }
   if(!t.found){ setStatus(null); showRead(null, t.error || "Couldn't turn that into a solvable problem — try rephrasing."); return; }
+  if(t.kind === "steps"){
+    // Phase 3 (Extend): word problem -> AI setup + per-step verified computations
+    setStatus("Working through it…", true);
+    const stepResults = [];
+    for(const s of t.steps){ stepResults.push({ label:s.label, command:s.command, result: await localSolve(s.command) }); }
+    setStatus(null);
+    renderExtend(t, stepResults);
+    scrollTop();
+    return;
+  }
   $("#q").value = t.query;   // populate the box with the model's command
   if(t.note){
     // the model flagged ambiguity -> show the reading and wait for a Solve press (confirm)
@@ -465,19 +527,35 @@ function parseCmd(text){
   return { found:true, query:String(p.query), latex:p.latex?String(p.latex):"", note:p.note?String(p.note):"" };
 }
 
-// Plain English -> ONE solver command. A non-empty `note` means the model wasn't sure.
+// Plain English -> a solver plan. kind="single" (one command) or kind="steps"
+// (a word problem: an AI setup + an ordered list of independently-verified computations).
 async function translateWithClaude(text){
   const out = await anthropic(
-    "You translate a student's plain-English MATH request into ONE command for a math solver (it handles calculus, algebra, equation-solving, and arithmetic). You do NOT solve it. If the request needs something the solver can't do (systems of equations, matrices, statistics/probability, unit conversion), set found=false with a brief note. Otherwise fill note ONLY if the request is genuinely ambiguous. Reply with ONLY one JSON object, no prose, no code fences.",
+    "You turn a student's plain-English MATH request into a plan for a math solver that handles calculus, algebra, equation-solving, and arithmetic. You do NOT do the math yourself. " +
+    "For a SINGLE-STEP problem, return kind=\"single\" with one \"query\". " +
+    "For an APPLIED WORD PROBLEM needing a setup plus several computations (related rates, optimization, area/volume between curves, motion), return kind=\"steps\" with a plain-English \"setup\" describing the relationship/equation you set up, and an ordered \"steps\" array where each step has a \"label\" (what it computes) and a \"command\"; the LAST step must compute the final answer. " +
+    "Every command MUST fit the grammar exactly: to evaluate an expression at a value, substitute the number directly into a bare arithmetic command (e.g. to get 3*t^2-12*t+9 at t=2, the command is \"3*2^2 - 12*2 + 9\"); use single-letter variable names only — name any unknown rate with one letter, e.g. to find dy/dt from 24 + 16*(dy/dt) = 0 the command is \"solve 24 + 16*r = 0 for r\". " +
+    "If the request needs something the solver can't do (systems of equations, matrices, statistics/probability, unit conversion), set found=false with a brief note. " +
+    "Reply with ONLY one JSON object, no prose, no code fences.",
     [{ type:"text", text:
-      "Translate this request into JSON: " +
-      '{"found": true|false, "query": "<ONE solver command>", "latex": "<the problem as LaTeX>", "note": "<caveat ONLY if ambiguous or out of scope, else empty>"}\n' +
-      "The query MUST use this grammar: " + GRAMMAR + "\n" +
+      "Turn this request into JSON:\n" +
+      '{"found": true|false, "kind": "single"|"steps", "latex": "<the problem as LaTeX>", ' +
+      '"query": "<command, only if kind=single>", "setup": "<plain-English setup, only if kind=steps>", ' +
+      '"steps": [{"label":"<what it computes>","command":"<command>"}], ' +
+      '"note": "<caveat if ambiguous, else empty>"}\n' +
+      "Every command MUST use this grammar: " + GRAMMAR + "\n" +
       "If it isn't a math request this solver can handle, found=false with a short note.\n\nRequest: " + text }]
   );
-  const r = parseCmd(out);
-  if(!r.found && !r.error) r.error = "Couldn't turn that into a solvable problem — try rephrasing.";
-  return r;
+  let p; try{ p = JSON.parse(out); }catch(e){ p = null; }
+  if(!p || p.found === false){
+    return { found:false, error:(p && p.note) || "Couldn't turn that into a solvable problem — try rephrasing." };
+  }
+  if(p.kind === "steps" && Array.isArray(p.steps)){
+    const steps = p.steps.filter(s=>s && s.command).map(s=>({ label:String(s.label||""), command:String(s.command) }));
+    if(steps.length) return { found:true, kind:"steps", setup:String(p.setup||""), latex:p.latex?String(p.latex):"", steps, note:p.note?String(p.note):"" };
+  }
+  if(!p.query) return { found:false, error:p.note || "Couldn't turn that into a solvable problem — try rephrasing." };
+  return { found:true, kind:"single", query:String(p.query), latex:p.latex?String(p.latex):"", note:p.note?String(p.note):"" };
 }
 
 // Cheap local classifier: does this typed input need the LLM, or is it a clean command?
