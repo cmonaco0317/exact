@@ -298,6 +298,11 @@ Any static host works — it's just files. For GitHub Pages, serve the repo root
 Vercel, deploy as a static project (`solver.py` sits at the root and is served as a
 static asset, **not** an `/api` function).
 
+## Positioning
+
+Who this is for, what it is genuinely best at, and the weaknesses it hasn'''t solved
+(the BYOK wall, the cold start, the absence of a moat): [docs/POSITIONING.md](docs/POSITIONING.md).
+
 ## License
 
 [MIT](LICENSE) © Carter Monaco.
