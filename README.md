@@ -288,7 +288,7 @@ gets — no drift between what's tested and what ships.
   exception text (`SyntaxError`, `TypeError`, tracebacks) can reach a user.
 
 ```bash
-python3 -m venv venv && ./venv/bin/pip install sympy
+python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
 ./venv/bin/python test_solver.py     # -> RESULT: ALL PASS
 ```
 
