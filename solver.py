@@ -12,6 +12,8 @@ This exact file is embedded verbatim into the web app and runs in the browser
 via Pyodide, so it must stay pure-Python (sympy + mpmath only, no file/network).
 """
 
+import cmath
+import math
 import re
 import sympy as sp
 from sympy import (
@@ -90,6 +92,52 @@ _ALIASES = [
 _SAMPLES = [0.4123, 1.2711, -0.7237, 2.1329, -1.4519, 0.9137, -0.3301, 1.7743]
 
 
+def _stable_seed(text):
+    """FNV-1a. Deliberately not Python's hash(), which is salted per process
+    (PYTHONHASHSEED) and would make verification non-reproducible run-to-run."""
+    h = 0x811C9DC5
+    for ch in str(text):
+        h ^= ord(ch) & 0xFF
+        h = (h * 0x01000193) & 0xFFFFFFFF
+    return h
+
+
+def _samples_for(expr):
+    """Sample points for the numeric check, jittered per-expression.
+
+    The points used to be a fixed public list of 8 values. That made any blind
+    spot in the verifier *permanent* rather than random: an answer that happened
+    to agree at exactly those 8 abscissae would pass forever, and the list is
+    right there in the source to tune against.
+
+    Deriving the jitter from a stable hash of the expression keeps every property
+    the fixed list was there for -- the same input yields the same points on every
+    run, and identically under CPython and Pyodide, so a result never flickers
+    between verified and not -- while making the abscissae unpredictable across
+    *different* problems. The base spread is preserved so coverage stays good.
+    """
+    rnd = _stable_seed(expr)
+    out = []
+    for base in _SAMPLES:
+        rnd = (1103515245 * rnd + 12345) & 0x7FFFFFFF  # LCG, reproducible anywhere
+        jitter = (rnd / 0x7FFFFFFF - 0.5) * 0.7  # +/- 0.35
+        pt = base + jitter
+        if abs(pt) < 0.05:  # keep away from 0, where 1/x-style terms blow up
+            pt += 0.4
+        out.append(round(pt, 6))
+    return out
+
+
+# Complex sample points, same rationale. Used to re-check complex-analysis
+# answers against plain Python complex arithmetic.
+_CSAMPLES = [
+    complex(0.7213, 1.3179),
+    complex(-1.1427, 0.5361),
+    complex(1.9043, -0.8112),
+    complex(-0.4519, -1.6234),
+]
+
+
 # --------------------------------------------------------------------------- #
 #  Preprocessing
 # --------------------------------------------------------------------------- #
@@ -105,6 +153,23 @@ _SUPER = {
     "¹": "^1",
     "⁰": "^0",
 }
+
+
+class UserError(ValueError):
+    """An error whose message is written for the user and is safe to display.
+
+    Everything else -- SyntaxError, TypeError, SympifyError and friends -- is an
+    implementation detail. Those used to be printed verbatim ("TypeError:
+    unsupported operand type(s) for ** or pow(): 'FunctionClass' and 'Integer'"),
+    which tells the user nothing and reads like a crash.
+    """
+
+
+_GENERIC_PARSE_ERROR = (
+    "I couldn't read that. Check for a missing parenthesis or operator — "
+    "e.g. `cos^2(x)` rather than `cos^2 x`. If it's a word problem, try "
+    "phrasing it as an expression: `derivative of x^2 sin(x)`."
+)
 
 
 def preprocess(raw):
@@ -137,14 +202,28 @@ def preprocess(raw):
     return s
 
 
-def _P(expr_str):
+# Complex analysis is the one place users reliably write lowercase `i` (3+4i).
+# SymPy only knows the capital form, so plain `i` parses as a free symbol and
+# every complex op silently returns nonsense: re(3+4i) -> 4*re(i) + 3. Alias it,
+# but ONLY for complex handlers -- `i` is the conventional summation index
+# everywhere else, and `sum of i^2 from 1 to 10` must keep treating it as one.
+_COMPLEX_LOCALS = dict(_LOCALS, i=I)
+
+
+def _P(expr_str, locals_=None):
     """Parse an expression string into a SymPy expression (may raise)."""
     expr_str = expr_str.strip().strip(".").strip()
     # strip a trailing "dx" / "d x" if it slipped through
     expr_str = re.sub(r"\s*d\s*[a-zA-Z]\s*$", "", expr_str)
     if not expr_str:
-        raise ValueError("empty expression")
-    return parse_expr(expr_str, transformations=_TRANSFORMS, local_dict=dict(_LOCALS))
+        raise UserError(
+            "There's no expression there — type something like `derivative of x^2`."
+        )
+    return parse_expr(
+        expr_str,
+        transformations=_TRANSFORMS,
+        local_dict=dict(_LOCALS if locals_ is None else locals_),
+    )
 
 
 def _pick_var(expr, prefer="x"):
@@ -178,20 +257,43 @@ def _close(a, b, rel=1e-6, atol=1e-9):
     return abs(a - b) <= atol + rel * max(abs(a), abs(b))
 
 
+# Tolerance for the central-difference derivative check. The measured error
+# floor on *correct* answers is ~1.5e-9 (worst case sin(10x), dominated by
+# O(h^2) truncation plus cancellation in (f(x+h)-f(x-h))/2h). 1e-7 sits ~66x
+# above that floor: tight enough that "verified" means matched, loose enough
+# that it has never false-flagged a correct symbolic answer across the suite.
+# It was 1e-3, which silently rubber-stamped errors as large as 0.1%.
+# (Re-measured after sample points became per-expression: floor unchanged.)
+_DERIV_TOL = 1e-7
+
+
 def _verify_derivative(f, var, dydx):
-    """Central finite-difference check of a derivative at several points."""
+    """Central finite-difference check of a derivative at several points.
+
+    Any *other* free symbols are pinned to sample values too, so partial
+    derivatives get a real check. Previously only `var` was substituted, which
+    left `d/dy [x^2 y]` un-evaluable — every partial derivative silently fell
+    through to "computed symbolically".
+    """
     h = 1e-5
     agree = 0
     total = 0
-    for x0 in _SAMPLES:
-        fp = _numeric(f, {var: x0 + h})
-        fm = _numeric(f, {var: x0 - h})
-        exact = _numeric(dydx, {var: x0})
+    others = [s for s in sorted(f.free_symbols, key=lambda s: s.name) if s != var]
+    pts = _samples_for(f)
+    for k, x0 in enumerate(pts):
+        # NB: build these by copy-then-assign, not dict(fixed, **{var: ...}) —
+        # ** requires string keys and `var` is a Symbol.
+        fixed = {s: pts[(k + i + 1) % len(pts)] for i, s in enumerate(others)}
+        at_up, at_dn, at_0 = dict(fixed), dict(fixed), dict(fixed)
+        at_up[var], at_dn[var], at_0[var] = x0 + h, x0 - h, x0
+        fp = _numeric(f, at_up)
+        fm = _numeric(f, at_dn)
+        exact = _numeric(dydx, at_0)
         if fp is None or fm is None or exact is None:
             continue
         approx = (fp - fm) / (2 * h)
         total += 1
-        if abs(approx - exact) <= 1e-3 * (1 + abs(exact)):
+        if abs(approx - exact) <= _DERIV_TOL * (1 + abs(exact)):
             agree += 1
     if total == 0:
         return (
@@ -214,6 +316,444 @@ def _verify_antiderivative(f, var, F):
     if ok is None:
         return None, "computed symbolically (numeric check not applicable)"
     return False, "numeric check: derivative of the answer did not match the integrand"
+
+
+def _verify_complex(expr, op, val):
+    """Re-check a complex-analysis answer against plain Python complex arithmetic.
+
+    This one is genuinely independent: `cmath`/`complex` never touch SymPy's
+    simplifier, so agreement is two separate implementations reaching the same
+    number rather than the CAS confirming itself.
+    """
+    pyop = {
+        "re": lambda z: complex(z.real, 0.0),
+        "im": lambda z: complex(z.imag, 0.0),
+        "conjugate": lambda z: z.conjugate(),
+        "modulus": lambda z: complex(abs(z), 0.0),
+        "argument": lambda z: complex(cmath.phase(z), 0.0),
+    }[op]
+    syms = sorted(expr.free_symbols, key=lambda s: s.name)
+    agree = 0
+    total = 0
+    for k in range(len(_CSAMPLES)):
+        subs = {s: _CSAMPLES[(k + j) % len(_CSAMPLES)] for j, s in enumerate(syms)}
+        z = _numeric(expr, subs)
+        got = _numeric(val, subs)
+        if z is None or got is None:
+            continue
+        want = pyop(z)
+        total += 1
+        if abs(want - got) <= 1e-9 * (1 + abs(want)):
+            agree += 1
+    if total == 0:
+        return None, "computed symbolically (numeric check not applicable)"
+    if agree == total:
+        return True, f"re-checked against Python complex arithmetic at {total} points"
+    return False, f"numeric check disagreed ({agree}/{total} points matched)"
+
+
+# --------------------------------------------------------------------------- #
+#  Independent checks for operations that used to ship unverified.
+#
+#  "Independent" is the whole point. Asking SymPy the same question twice is not
+#  a verification, so each of these reaches the answer by a different route:
+#  hand-rolled Gaussian elimination for linear algebra, finite differences for
+#  partials, plain-Python arithmetic over the raw data for statistics, and a
+#  numeric contour integral for residues.
+# --------------------------------------------------------------------------- #
+def _mat_floats(M):
+    """Matrix -> list-of-lists of Python complex, or None if not fully numeric."""
+    try:
+        out = []
+        for i in range(M.rows):
+            row = []
+            for j in range(M.cols):
+                v = _numeric(M[i, j], {})
+                if v is None:
+                    return None
+                row.append(v)
+            out.append(row)
+        return out or None
+    except Exception:
+        return None
+
+
+def _gauss_det(A):
+    """Determinant by Gaussian elimination with partial pivoting."""
+    n = len(A)
+    a = [r[:] for r in A]
+    det = complex(1)
+    for c in range(n):
+        p = max(range(c, n), key=lambda r: abs(a[r][c]))
+        if abs(a[p][c]) < 1e-14:
+            return complex(0)
+        if p != c:
+            a[c], a[p] = a[p], a[c]
+            det = -det
+        piv = a[c][c]
+        det *= piv
+        for r in range(c + 1, n):
+            f = a[r][c] / piv
+            for k in range(c, n):
+                a[r][k] -= f * a[c][k]
+    return det
+
+
+def _gauss_rank(A):
+    """Rank by row reduction with partial pivoting; tolerance scaled to the data."""
+    a = [r[:] for r in A]
+    rows, cols = len(a), len(a[0])
+    biggest = max((abs(v) for r in a for v in r), default=0.0)
+    tol = max(rows, cols) * 1e-12 * (biggest or 1.0)
+    rank = r = 0
+    for c in range(cols):
+        if r >= rows:
+            break
+        p = max(range(r, rows), key=lambda k: abs(a[k][c]))
+        if abs(a[p][c]) <= tol:
+            continue
+        a[r], a[p] = a[p], a[r]
+        piv = a[r][c]
+        for k in range(r + 1, rows):
+            f = a[k][c] / piv
+            for j in range(c, cols):
+                a[k][j] -= f * a[r][j]
+        r += 1
+        rank += 1
+    return rank
+
+
+def _verify_determinant(M, val):
+    A = _mat_floats(M)
+    got = _numeric(val, {})
+    if A is None or got is None or len(A) != len(A[0]):
+        return None, "computed symbolically (numeric check not applicable)"
+    ref = _gauss_det(A)
+    if abs(ref - got) <= 1e-7 * (1 + abs(ref)):
+        return True, "confirmed by independent Gaussian elimination"
+    return (
+        False,
+        f"independent elimination gave {ref.real:.6g}, symbolic gave {got.real:.6g}",
+    )
+
+
+def _verify_trace(M, val):
+    """Sum the diagonal directly rather than calling M.trace() again."""
+    if M.rows != M.cols:
+        return False, "trace is only defined for a square matrix"
+    ref = sum((M[i, i] for i in range(M.rows)), S.Zero)
+    if simplify(ref - val) == 0:
+        return True, f"confirmed by summing the {M.rows} diagonal entries directly"
+    return False, f"summing the diagonal gave {ref}, symbolic gave {val}"
+
+
+def _verify_mode(data, modes, count):
+    """Recount occurrences independently and confirm the reported set is exactly
+    the set of values attaining the maximum."""
+    tally = {}
+    for v in data:
+        tally[str(v)] = tally.get(str(v), 0) + 1
+    if not tally:
+        return None, "computed symbolically (numeric check not applicable)"
+    top = max(tally.values())
+    if top != count:
+        return False, f"independent count found a max frequency of {top}, not {count}"
+    want = {k for k, c in tally.items() if c == top}
+    got = {str(v) for v in modes}
+    if want != got:
+        return False, "the reported values are not exactly those attaining the maximum"
+    return True, f"confirmed by an independent count — appears {top} time(s)"
+
+
+def _verify_rank(M, val):
+    A = _mat_floats(M)
+    if A is None:
+        return None, "computed symbolically (numeric check not applicable)"
+    ref = _gauss_rank(A)
+    if ref == int(val):
+        return True, f"confirmed by independent row reduction ({ref} pivots found)"
+    return False, f"independent row reduction found rank {ref}, symbolic gave {val}"
+
+
+def _verify_transpose(M, T):
+    """Entry-by-entry: T[j][i] must equal M[i][j]. Checks the operation itself
+    rather than re-running it."""
+    if T.rows != M.cols or T.cols != M.rows:
+        return False, "the result has the wrong shape for a transpose"
+    for i in range(M.rows):
+        for j in range(M.cols):
+            if simplify(T[j, i] - M[i, j]) != 0:
+                return False, f"entry ({j + 1},{i + 1}) does not match the original"
+    return True, f"confirmed entry-by-entry across all {M.rows * M.cols} positions"
+
+
+def _verify_rref(M, R):
+    """Two checks SymPy's rref() doesn't do for us: that the result really is in
+    reduced row-echelon form, and that row reduction preserved the rank (an
+    independently computed one)."""
+    A, B = _mat_floats(M), _mat_floats(R)
+    if A is None or B is None:
+        return None, "computed symbolically (numeric check not applicable)"
+    eps = 1e-9
+    last_pivot = -1
+    seen_zero_row = False
+    for row in B:
+        piv = next((j for j, v in enumerate(row) if abs(v) > eps), None)
+        if piv is None:
+            seen_zero_row = True
+            continue
+        if seen_zero_row:
+            return False, "a zero row appears above a nonzero row"
+        if piv <= last_pivot:
+            return False, "pivot columns are not strictly increasing"
+        last_pivot = piv
+        if abs(row[piv] - 1) > eps:
+            return False, "a pivot entry is not 1"
+        if any(abs(B[k][piv]) > eps for k in range(len(B)) if B[k] is not row):
+            return False, "a pivot column has another nonzero entry"
+    if _gauss_rank(A) != _gauss_rank(B):
+        return False, "rank changed — row reduction did not preserve the row space"
+    return True, "confirmed: valid reduced row-echelon form, rank preserved"
+
+
+_PARTIAL_TOL = 1e-6
+_SECOND_TOL = 1e-4
+
+
+def _verify_gradient(f, syms, parts):
+    """Finite-difference every partial derivative."""
+    h = 1e-5
+    pts = _samples_for(f)
+    agree = total = 0
+    for k in range(4):
+        base = {s: pts[(k + i) % len(pts)] for i, s in enumerate(syms)}
+        for i, s in enumerate(syms):
+            up, dn = dict(base), dict(base)
+            up[s], dn[s] = base[s] + h, base[s] - h
+            fp, fm, ex = _numeric(f, up), _numeric(f, dn), _numeric(parts[i], base)
+            if fp is None or fm is None or ex is None:
+                continue
+            total += 1
+            if abs((fp - fm) / (2 * h) - ex) <= _PARTIAL_TOL * (1 + abs(ex)):
+                agree += 1
+    if total == 0:
+        return None, "computed symbolically (numeric check not applicable)"
+    if agree == total:
+        return True, f"every partial confirmed by finite differences ({total} checks)"
+    return False, f"numeric check disagreed ({agree}/{total} partials matched)"
+
+
+def _verify_hessian(f, syms, H):
+    """Finite-difference every second partial, including the mixed ones.
+    Uses a larger step than the gradient: second differences divide by h twice
+    and amplify floating-point noise accordingly."""
+    h = 1e-3
+    pts = _samples_for(f)
+    agree = total = 0
+    for k in range(3):
+        base = {s: pts[(k + i) % len(pts)] for i, s in enumerate(syms)}
+        f0 = _numeric(f, base)
+        for i, si in enumerate(syms):
+            for j, sj in enumerate(syms):
+
+                def at(di, dj):
+                    p = dict(base)
+                    p[si] = p[si] + di * h
+                    p[sj] = p[sj] + dj * h
+                    return _numeric(f, p)
+
+                if i == j:
+                    fp, fm = at(1, 0), at(-1, 0)
+                    if fp is None or fm is None or f0 is None:
+                        continue
+                    approx = (fp - 2 * f0 + fm) / (h * h)
+                else:
+                    pp, pm, mp, mm = at(1, 1), at(1, -1), at(-1, 1), at(-1, -1)
+                    if pp is None or pm is None or mp is None or mm is None:
+                        continue
+                    approx = (pp - pm - mp + mm) / (4 * h * h)
+                ex = _numeric(H[i, j], base)
+                if ex is None:
+                    continue
+                total += 1
+                if abs(approx - ex) <= _SECOND_TOL * (1 + abs(ex)):
+                    agree += 1
+    if total == 0:
+        return None, "computed symbolically (numeric check not applicable)"
+    if agree == total:
+        return (
+            True,
+            f"every second partial confirmed by finite differences ({total} checks)",
+        )
+    return False, f"numeric check disagreed ({agree}/{total} entries matched)"
+
+
+# Step size and tolerance per derivative order. Each differencing level divides
+# by h again, so roundoff grows like h^-order: the step has to grow with order
+# and the tolerance has to loosen with it. Measured, not guessed -- see
+# test_solver.py's rejection suite for the wrong-answer side.
+_NTH_DIFF = {2: (1e-3, 1e-4), 3: (1e-2, 1e-3), 4: (3e-2, 1e-2)}
+
+
+def _verify_nth_derivative(f, var, dnf, order):
+    """Repeated central differences for higher-order derivatives."""
+    if order not in _NTH_DIFF:
+        return None, f"order-{order} derivative computed symbolically"
+    h, tol = _NTH_DIFF[order]
+    agree = total = 0
+    for x0 in _samples_for(f):
+        vals = []
+        for m in range(order + 1):
+            v = _numeric(f, {var: x0 + (m - order / 2.0) * h})
+            if v is None:
+                break
+            vals.append(v)
+        if len(vals) != order + 1:
+            continue
+        ex = _numeric(dnf, {var: x0})
+        if ex is None:
+            continue
+        approx = sum(
+            (-1) ** m * math.comb(order, m) * vals[order - m] for m in range(order + 1)
+        ) / (h**order)
+        total += 1
+        if abs(approx - ex) <= tol * (1 + abs(ex)):
+            agree += 1
+    if total == 0:
+        return None, "computed symbolically (numeric check not applicable)"
+    if agree == total:
+        return True, f"numerically confirmed at {total} sample points"
+    return False, f"numeric check disagreed ({agree}/{total} points matched)"
+
+
+def _verify_stats(data, kind, val, sample=False):
+    """Recompute from the raw values in plain Python floats.
+
+    Independent two ways: float arithmetic rather than SymPy's exact rationals,
+    and — for variance/std — the E[x^2] - E[x]^2 identity rather than the
+    sum-of-squared-deviations formula the engine uses.
+    """
+    xs = []
+    for v in data:
+        f = _numeric(v, {})
+        if f is None:
+            return None, "computed symbolically (numeric check not applicable)"
+        xs.append(f.real)
+    got = _numeric(val, {})
+    if got is None or not xs:
+        return None, "computed symbolically (numeric check not applicable)"
+    n = len(xs)
+    if kind == "median":
+        s = sorted(xs)
+        ref = s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2.0
+        note = "confirmed by an independent sort"
+    else:
+        mean = sum(xs) / n
+        pop = sum(x * x for x in xs) / n - mean * mean
+        var = pop * n / (n - 1) if (sample and n > 1) else pop
+        var = max(var, 0.0)
+        ref = var if kind == "variance" else var**0.5
+        note = "confirmed by an independent formula (E[x²] − E[x]²)"
+    if abs(ref - got.real) <= 1e-6 * (1 + abs(ref)):
+        return True, note
+    return (
+        False,
+        f"independent computation gave {ref:.6g}, symbolic gave {got.real:.6g}",
+    )
+
+
+# SI magnitudes, entered by hand from the defining relations: 1 inch = 0.0254 m
+# exactly, 1 lb = 0.45359237 kg exactly, 1 US gallon = 231 in^3 exactly. Typed
+# out on purpose -- this is the INDEPENDENT check on SymPy's unit table, and
+# re-reading SymPy's own factors would verify precisely nothing.
+_SI_FACTOR = {
+    "meter": (1.0, "length"),
+    "kilometer": (1000.0, "length"),
+    "centimeter": (0.01, "length"),
+    "millimeter": (0.001, "length"),
+    "inch": (0.0254, "length"),
+    "foot": (0.3048, "length"),
+    "yard": (0.9144, "length"),
+    "mile": (1609.344, "length"),
+    "kilogram": (1.0, "mass"),
+    "gram": (0.001, "mass"),
+    "pound": (0.45359237, "mass"),
+    "second": (1.0, "time"),
+    "minute": (60.0, "time"),
+    "hour": (3600.0, "time"),
+    "day": (86400.0, "time"),
+    "liter": (0.001, "volume"),
+    "gallon": (0.003785411784, "volume"),
+}
+
+
+def _verify_convert(qty, src_name, dst_name, coeff):
+    """Recompute the conversion from hand-entered SI magnitudes."""
+    a = _SI_FACTOR.get(_UNIT_MAP.get(src_name.lower().strip(), ""))
+    b = _SI_FACTOR.get(_UNIT_MAP.get(dst_name.lower().strip(), ""))
+    q = _numeric(qty, {})
+    got = _numeric(coeff, {})
+    if not a or not b or q is None or got is None:
+        return None, "computed symbolically (numeric check not applicable)"
+    if a[1] != b[1]:
+        return False, f"those units measure different things ({a[1]} vs {b[1]})"
+    ref = q.real * a[0] / b[0]
+    if abs(ref - got.real) <= 1e-9 * (1 + abs(ref)):
+        return True, "confirmed against an independent SI conversion table"
+    return (
+        False,
+        f"independent table gave {ref:.6g}, symbolic gave {got.real:.6g}",
+    )
+
+
+def _verify_stats_pair(data, kind, pop_val, samp_val):
+    """Variance and standard deviation are reported in both flavours, so both
+    have to clear the check — verifying only the population figure would leave
+    the sample figure (the /(n-1) one, where an off-by-one actually hides)
+    completely unchecked."""
+    v1, n1 = _verify_stats(data, kind, pop_val, sample=False)
+    if samp_val is None:
+        return v1, n1
+    v2, n2 = _verify_stats(data, kind, samp_val, sample=True)
+    if v1 is True and v2 is True:
+        return True, n1 + ", for both population and sample"
+    if v1 is False or v2 is False:
+        return False, (n1 if v1 is False else n2)
+    return None, "computed symbolically (numeric check not applicable)"
+
+
+def _verify_residue(expr, z, pt, val):
+    """Numeric contour integral: Res = (1/2πi) ∮ f dz around a small circle.
+
+    That's the definition, evaluated directly — independent of the series
+    expansion SymPy's residue() uses to get there.
+    """
+    c = _numeric(pt, {})
+    want = _numeric(val, {})
+    if c is None or want is None:
+        return None, "computed symbolically (numeric check not applicable)"
+    for radius in (0.1, 0.03):
+        steps = 512
+        acc = complex(0)
+        ok = True
+        for k in range(steps):
+            th = 2 * cmath.pi * (k + 0.5) / steps
+            e = cmath.exp(1j * th)
+            fz = _numeric(expr, {z: c + radius * e})
+            if fz is None:
+                ok = False
+                break
+            acc += fz * (1j * radius * e) * (2 * cmath.pi / steps)
+        if not ok:
+            continue
+        got = acc / (2j * cmath.pi)
+        if abs(got - want) <= 1e-4 * (1 + abs(want)):
+            return True, "confirmed by numeric contour integration"
+        return (
+            False,
+            f"contour integration gave {got.real:.6g}, symbolic gave {want.real:.6g}",
+        )
+    return None, "computed symbolically (numeric check not applicable)"
 
 
 def _verify_definite(f, var, a, b, value):
@@ -411,7 +951,7 @@ def _do_derivative(expr_str, var_name=None, order=1):
     verified, note = (
         _verify_derivative(expr, var, d_s)
         if order == 1
-        else (None, "higher-order derivative computed symbolically")
+        else _verify_nth_derivative(expr, var, d_s, order)
     )
     ordtxt = {1: "", 2: "second ", 3: "third "}.get(order, f"{order}th ")
     steps = [
@@ -733,8 +1273,70 @@ def _do_algebra(kind, expr_str):
     )
 
 
+# Multi-letter tokens that legitimately appear inside an expression. Anything
+# else with two or more letters in a row is prose, not math.
+_KNOWN_TOKENS = (
+    set(_FUNCS.split("|"))
+    | {long for long, _ in _ALIASES}
+    | {short for _, short in _ALIASES}
+    | {
+        "pi",
+        "oo",
+        "inf",
+        "infinity",
+        "infty",
+        "gamma",
+        "abs",
+        "sqrt",
+        "cbrt",
+        "root",
+        "factorial",
+        "binomial",
+        "floor",
+        "ceiling",
+        "ceil",
+        "sign",
+        "re",
+        "im",
+        "conjugate",
+        "arg",
+        "max",
+        "min",
+        "mod",
+        "lcm",
+        "gcd",
+        "log",
+        "ln",
+        "exp",
+        "atan2",
+        "zoo",
+        "nan",
+        "eye",
+        "diag",
+        "det",
+    }
+)
+
+
+def _prose_tokens(s):
+    """Letter runs in `s` that aren't known math identifiers."""
+    return [w for w in re.findall(r"[A-Za-z]{2,}", s) if w.lower() not in _KNOWN_TOKENS]
+
+
 def _do_expression(expr_str):
     """Bare expression: evaluate if numeric, else show + quick calculus facts."""
+    # The implicit-multiplication parser happily turns any unrecognized English
+    # into a product of single-letter symbols -- "mean of 5" parsed as
+    # 5*E*a*f*m*n*o and was displayed as a confident, badged answer. Refusing is
+    # strictly better than fabricating: a wrong answer under a trust badge is
+    # worse than no answer at all.
+    stray = _prose_tokens(expr_str)
+    if stray:
+        raise UserError(
+            "I couldn't read that as math — I don't recognize "
+            + ", ".join(f"'{w}'" for w in dict.fromkeys(stray[:3]))
+            + ". Try an expression like `derivative of x^2 sin(x)`."
+        )
     expr = _P(expr_str)
     if not expr.free_symbols:
         val = simplify(expr)
@@ -894,7 +1496,9 @@ def _verify_inequality(rel, sol, var):
     """Sample points: membership in the solution set must match the raw inequality."""
     agree = 0
     total = 0
-    for x0 in _SAMPLES + [0.0, 5.0, -5.0, 3.1415, -2.5, 10.0, -10.0]:
+    # Boundary values stay fixed on purpose: 0 and +/-5 are exactly where an
+    # inequality's solution set is most likely to be wrong.
+    for x0 in _samples_for(rel) + [0.0, 5.0, -5.0, 3.1415, -2.5, 10.0, -10.0]:
         try:
             in_sol = bool(sol.subs(var, x0))
             in_rel = bool(rel.subs(var, x0))
@@ -963,7 +1567,7 @@ def _parse_matrix(s):
     """Parse {{1,2},{3,4}} or [[1,2],[3,4]] into a SymPy Matrix (entries via _P)."""
     s = s.strip().replace("{", "[").replace("}", "]").strip()
     if not (s.startswith("[") and s.endswith("]")):
-        raise ValueError("not a matrix")
+        raise UserError("That doesn't look like a matrix. Try `[[1,2],[3,4]]`.")
     body = s[1:-1].strip()
     if body.startswith("["):
         rows = []
@@ -987,50 +1591,60 @@ def _do_matrix(op, mat_str):
 
     if op in ("determinant", "det"):
         val = simplify(M.det())
+        verified, note = _verify_determinant(M, val)
         return _result(
             type="determinant",
             input_latex=in_tex,
             answer_latex=rf"\det = {latex(val)}",
             answer_str=str(val),
             approx=_num_approx(val),
-            verify_note="exact",
+            verified=verified,
+            verify_note=note,
         )
     if op == "trace":
         val = simplify(M.trace())
+        verified, note = _verify_trace(M, val)
         return _result(
             type="trace",
             input_latex=in_tex,
             answer_latex=rf"\operatorname{{tr}} = {latex(val)}",
             answer_str=str(val),
             approx=_num_approx(val),
-            verify_note="exact",
+            verified=verified,
+            verify_note=note,
         )
     if op == "rank":
         val = M.rank()
+        verified, note = _verify_rank(M, val)
         return _result(
             type="rank",
             input_latex=in_tex,
             answer_latex=rf"\operatorname{{rank}} = {val}",
             answer_str=str(val),
-            verify_note="exact",
+            verified=verified,
+            verify_note=note,
         )
     if op == "transpose":
         T = M.T
+        verified, note = _verify_transpose(M, T)
         return _result(
             type="transpose",
             input_latex=in_tex,
             answer_latex=latex(T),
             answer_str=str(T),
-            verify_note="exact",
+            verified=verified,
+            verify_note=note,
         )
     if op in ("rref", "rowreduce"):
         R = M.rref()[0]
+        verified, note = _verify_rref(M, R)
         return _result(
             type="rref",
             input_latex=in_tex,
             answer_latex=latex(R),
             answer_str=str(R),
-            verify_note="reduced row-echelon form",
+            verified=verified,
+            verify_note=note,
         )
     if op == "inverse":
         if simplify(M.det()) == 0:
@@ -1134,25 +1748,75 @@ def _do_factorint(n):
     )
 
 
+def _miller_rabin(n):
+    """Deterministic Miller-Rabin (first 12 primes as bases; exact for n < 3.3e24).
+
+    Written out longhand on purpose: this is the *independent* check on
+    sp.isprime, so it must not call back into SymPy. Two separate algorithms
+    agreeing is a verification; asking SymPy twice is not.
+    """
+    if n < 2:
+        return False
+    bases = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37]
+    for p in bases:
+        if n % p == 0:
+            return n == p
+    d, r = n - 1, 0
+    while d % 2 == 0:
+        d //= 2
+        r += 1
+    for a in bases:
+        y = pow(a, d, n)
+        if y == 1 or y == n - 1:
+            continue
+        for _ in range(r - 1):
+            y = y * y % n
+            if y == n - 1:
+                break
+        else:
+            return False
+    return True
+
+
 def _do_isprime(n):
-    if sp.isprime(n):
+    n = int(n)
+    prime = sp.isprime(n)
+    independent = _miller_rabin(n)
+    if prime != independent:  # should be unreachable; surfaced, not hidden
+        return _result(
+            type="primality",
+            input_latex=str(n),
+            answer_latex=(
+                rf"{n}\ \text{{is prime}}" if prime else rf"{n}\ \text{{is not prime}}"
+            ),
+            answer_str=f"{n} is {'prime' if prime else 'not prime'}",
+            verified=False,
+            verify_note="two independent primality tests disagreed — do not trust this",
+        )
+    if prime:
         return _result(
             type="primality",
             input_latex=str(n),
             answer_latex=rf"{n}\ \text{{is prime}}",
             answer_str=f"{n} is prime",
             verified=True,
-            verify_note="no divisor other than 1 and itself",
+            verify_note="confirmed by an independent Miller-Rabin test",
         )
     f = sp.factorint(n)
     sm = min(f) if f else None
+    # A composite claim is verifiable outright: exhibit a divisor and check it.
+    witness = sm is not None and 1 < sm < n and n % sm == 0
     return _result(
         type="primality",
         input_latex=str(n),
         answer_latex=rf"{n}\ \text{{is not prime}}",
         answer_str=f"{n} is not prime",
-        verified=True,
-        verify_note=(f"divisible by {sm}" if (sm is not None and sm < n) else ""),
+        verified=True if witness else None,
+        verify_note=(
+            f"confirmed: {n} = {sm} x {n // sm}"
+            if witness
+            else "computed symbolically (no divisor witness available)"
+        ),
     )
 
 
@@ -1194,7 +1858,9 @@ def _do_stats(op, data_str):
         verified = simplify(mean * n - total) == 0
         return _res("mean", mean, "sum / count" if verified else "", verified)
     if op == "median":
-        return _res("median", _median(srt))
+        med = _median(srt)
+        v, note = _verify_stats(data, "median", med)
+        return _res("median", med, note, v)
     if op == "mode":
         from collections import Counter
 
@@ -1205,18 +1871,21 @@ def _do_stats(op, data_str):
             if c[str(v)] == top and v not in seen:
                 seen.append(v)
         mode_tex = ",\\ ".join(latex(v) for v in seen)
+        verified, note = _verify_mode(data, seen, top)
         return _result(
             type="mode",
             input_latex=data_tex,
             answer_latex=rf"\text{{mode}} = {mode_tex}",
             answer_str=", ".join(str(v) for v in seen),
-            verify_note=f"appears {top} time(s)",
+            verified=verified,
+            verify_note=note,
         )
 
     ss = sum((simplify(v - mean)) ** 2 for v in data)
     pop_var = simplify(ss / n)
     samp_var = simplify(ss / (n - 1)) if n > 1 else None
     if op in ("variance", "var"):
+        v, note = _verify_stats_pair(data, "variance", pop_var, samp_var)
         parts = [rf"\text{{population}} = {latex(pop_var)}"]
         if samp_var is not None:
             parts.append(rf"\text{{sample}} = {latex(samp_var)}")
@@ -1227,11 +1896,13 @@ def _do_stats(op, data_str):
             answer_str=f"population={pop_var}"
             + (f", sample={samp_var}" if samp_var is not None else ""),
             approx=_num_approx(pop_var),
-            verify_note="sum of squared deviations / n (population) or /(n-1) (sample)",
+            verified=v,
+            verify_note=note,
         )
     if op in ("standarddeviation", "std", "sd", "stdev"):
         pop_sd = simplify(sp.sqrt(pop_var))
         samp_sd = simplify(sp.sqrt(samp_var)) if samp_var is not None else None
+        v, note = _verify_stats_pair(data, "std", pop_sd, samp_sd)
         parts = [rf"\text{{population}} = {latex(pop_sd)}"]
         if samp_sd is not None:
             parts.append(rf"\text{{sample}} = {latex(samp_sd)}")
@@ -1242,7 +1913,8 @@ def _do_stats(op, data_str):
             answer_str=f"population={pop_sd}"
             + (f", sample={samp_sd}" if samp_sd is not None else ""),
             approx=_num_approx(pop_sd),
-            verify_note="square root of the variance",
+            verified=v,
+            verify_note=note,
         )
     if op in ("summary", "summarystatistics", "stats", "describe"):
         pop_sd = simplify(sp.sqrt(pop_var))
@@ -1271,6 +1943,7 @@ def _do_gradient(expr_str):
     syms = sorted(expr.free_symbols, key=lambda s: s.name) or [Symbol("x")]
     parts = [simplify(diff(expr, s)) for s in syms]
     grad = sp.Matrix(parts)
+    verified, note = _verify_gradient(expr, syms, parts)
     return _result(
         type="gradient",
         input_latex=latex(expr),
@@ -1280,7 +1953,8 @@ def _do_gradient(expr_str):
             rf"\frac{{\partial f}}{{\partial {latex(s)}}} = {latex(p)}"
             for s, p in zip(syms, parts)
         ],
-        verify_note="exact partial derivatives",
+        verified=verified,
+        verify_note=note,
     )
 
 
@@ -1288,12 +1962,14 @@ def _do_hessian(expr_str):
     expr = _P(expr_str)
     syms = sorted(expr.free_symbols, key=lambda s: s.name) or [Symbol("x")]
     H = sp.hessian(expr, syms)
+    verified, note = _verify_hessian(expr, syms, H)
     return _result(
         type="hessian",
         input_latex=latex(expr),
         answer_latex=latex(H),
         answer_str=str(H),
-        verify_note="matrix of second partial derivatives",
+        verified=verified,
+        verify_note=note,
     )
 
 
@@ -1486,7 +2162,7 @@ def _do_ode(eq_str, dep="y", ind="x"):
 #  Complex analysis, vector calculus, units (Tier-3 scope)
 # --------------------------------------------------------------------------- #
 def _do_complex(op, expr_str):
-    expr = _P(expr_str)
+    expr = _P(expr_str, locals_=_COMPLEX_LOCALS)
     fn = {
         "re": sp.re,
         "im": sp.im,
@@ -1502,27 +2178,32 @@ def _do_complex(op, expr_str):
         "modulus": "modulus",
         "argument": "arg",
     }[op]
+    verified, note = _verify_complex(expr, op, val)
     return _result(
         type=f"complex ({label})",
         input_latex=latex(expr),
         answer_latex=latex(val),
         answer_str=str(val),
         approx=_num_approx(val),
-        verify_note=f"{label} of the expression",
+        verified=verified,
+        verify_note=note,
     )
 
 
 def _do_residue(expr_str, var_name, point_str):
     z = Symbol(var_name)
-    expr, pt = _P(expr_str), _P(point_str)
+    expr = _P(expr_str, locals_=_COMPLEX_LOCALS)
+    pt = _P(point_str, locals_=_COMPLEX_LOCALS)
     val = simplify(sp.residue(expr, z, pt))
+    verified, note = _verify_residue(expr, z, pt, val)
     return _result(
         type="residue",
         input_latex=latex(expr),
         answer_latex=rf"\operatorname{{Res}} = {latex(val)}",
         answer_str=str(val),
         approx=_num_approx(val),
-        verify_note=f"residue at {var_name} = {point_str}",
+        verified=verified,
+        verify_note=f"residue at {var_name} = {point_str} — {note}",
     )
 
 
@@ -1619,20 +2300,22 @@ def _do_convert(qty_str, unit_str, to_unit_str):
     def _u(name):
         key = _UNIT_MAP.get(name.lower().strip())
         if not key:
-            raise ValueError(f"unknown unit '{name}'")
+            raise UserError(f"I don't know the unit '{name}'.")
         return getattr(U, key)
 
     qty = _P(qty_str)
     src, dst = _u(unit_str), _u(to_unit_str)
     val = convert_to(qty * src, dst)
     coeff = simplify(val / dst)
+    verified, note = _verify_convert(qty, unit_str, to_unit_str, coeff)
     return _result(
         type="unit conversion",
         input_latex=rf"{latex(qty)}\ \text{{{unit_str}}}",
         answer_latex=latex(val),
         answer_str=str(val),
         approx=_num_approx(coeff),
-        verify_note="unit conversion",
+        verified=verified,
+        verify_note=note,
     )
 
 
@@ -1746,8 +2429,81 @@ def _clean(q):
     return re.sub(r"\s+", " ", q.strip())
 
 
+# Answers that are correct internally and cryptic externally. "oo" and
+# "AccumBounds(-1, 1)" are exactly right as SymPy objects and mean nothing to a
+# student, so each gets a plain-English rider on the note line.
+_SPECIAL_NOTES = [
+    (
+        r"AccumBounds",
+        "the value oscillates between those bounds and never settles, so the limit does not exist",
+    ),
+    (r"\bzoo\b", "unbounded in the complex sense — the expression diverges"),
+    (r"\bnan\b", "undefined — there is no well-defined value here"),
+    (r"-\s*oo\b", "diverges to negative infinity"),
+    (r"\boo\b", "diverges to infinity"),
+]
+
+
+# Notation where the parse is defensible but probably isn't what was meant. The
+# verifier confirms SymPy operated correctly on *what it parsed* -- it cannot
+# confirm that the parse matched the user's intent. These are the cases where
+# that gap bites, so the reading gets flagged instead of silently badged.
+_READING_RISKS = [
+    (
+        rf"\b(?:{_FUNCS})\s+[A-Za-z]\w*\s*(?:\*|\s)\s*[A-Za-z0-9(]",
+        "a function written without parentheses swallowed the whole product — "
+        "`sin x cos x` reads as sin(x·cos x). Write `sin(x)*cos(x)` to be sure.",
+    ),
+    # No whitespace allowed before the trailing letter: "x^2 from 0 to 3" and
+    # "tangent to x^2 at x=1" are unambiguous, and flagging them would train
+    # people to ignore the warning.
+    (
+        r"\^\s*-?\d+[A-Za-z]",
+        "an exponent runs straight into a variable — `e^2x` reads as (e²)·x, "
+        "not e^(2x). Add parentheses to be sure.",
+    ),
+    (
+        r"[\dA-Za-z]\s*/\s*\d+[A-Za-z]",
+        "a fraction runs straight into a variable — `1/2x` reads as (1/2)·x, "
+        "not 1/(2x). Add parentheses to be sure.",
+    ),
+]
+
+
+def _reading_risk(raw):
+    """Return a warning when the input uses notation that parses ambiguously."""
+    # Drop a trailing integration differential -- `integral of sin x dx` is not
+    # an ambiguous juxtaposition, and _P strips the `dx` before parsing anyway.
+    raw = re.sub(r"\s+d\s*[a-z]\s*$", "", raw)
+    for pattern, message in _READING_RISKS:
+        if re.search(pattern, raw):
+            return message
+    return None
+
+
+def _explain_special(res):
+    """Attach a plain-English reading to divergent / undefined / oscillating answers."""
+    ans = str(res.get("answer_str", "")) + " " + str(res.get("answer_latex", ""))
+    for pattern, phrase in _SPECIAL_NOTES:
+        if re.search(pattern, ans):
+            note = res.get("verify_note") or ""
+            res["verify_note"] = phrase + (f" — {note}" if note else "")
+            break
+    return res
+
+
 def solve(query):
     """Public entry point. Returns a result dict; never raises."""
+    res = _solve(query)
+    if not (isinstance(res, dict) and res.get("ok")):
+        return res
+    risk = _reading_risk(_clean(preprocess(query or "")))
+    if risk:
+        res["reading_risk"] = risk
+    return _explain_special(res)
+
+
+def _solve(query):
     try:
         if not query or not query.strip():
             return {
@@ -1773,7 +2529,12 @@ def solve(query):
             return _do_stats(ms.group(1), ms.group(2))
         raw = _clean(preprocess(query))
         q = raw
-        ql = q.lower()
+        # Index-preserving lowercase. The router matches its regexes against `ql`
+        # and then slices the original-case `q` using match spans, so the two
+        # must stay in 1:1 character correspondence. Plain str.lower() expands a
+        # few Unicode codepoints (U+0130 -> two chars), which would shift every
+        # index after it; skipping those keeps the mapping exact.
+        ql = "".join(c.lower() if len(c.lower()) == 1 else c for c in q)
 
         # ---- order-sensitive command detection ----
 
@@ -1787,11 +2548,11 @@ def solve(query):
             o = omap.get(m.group(1), None)
             if o is None:
                 o = int(re.match(r"\d+", m.group(1)).group())
-            return _do_derivative(q[q.lower().find(m.group(2)) :], order=o)
+            return _do_derivative(q[m.start(2) :], order=o)
         m = re.search(r"^d\^?(\d+)\s*/\s*d\s*([a-z])\^?\d*\s*(?:of\s+)?(.+)$", ql)
         if m:
             return _do_derivative(
-                q[q.lower().find(m.group(3)) :],
+                q[m.start(3) :],
                 var_name=m.group(2),
                 order=int(m.group(1)),
             )
@@ -1802,10 +2563,7 @@ def solve(query):
         )
         if m:
             return _do_derivative(
-                q[
-                    q.lower().find(m.group(1)) : q.lower().find(m.group(1))
-                    + len(m.group(1))
-                ],
+                q[m.start(1) : m.end(1)],
                 var_name=m.group(2),
                 order=1,
             )
@@ -1815,7 +2573,7 @@ def solve(query):
             r"^differentiate\s+(.+)$", ql
         )
         if m:
-            body = q[q.lower().find(m.group(1)) :]
+            body = q[m.start(1) :]
             vn = None
             mv = re.search(r"\s+with\s+respect\s+to\s+([a-z])\b", body.lower())
             if mv:
@@ -1824,30 +2582,30 @@ def solve(query):
             return _do_derivative(body, var_name=vn)
         m = re.search(r"^d\s*/\s*d\s*([a-z])\s*(?:of\s+)?\(?(.+?)\)?$", ql)
         if m:
-            return _do_derivative(q[q.lower().find(m.group(2)) :], var_name=m.group(1))
+            return _do_derivative(q[m.start(2) :], var_name=m.group(1))
 
         # 3D surface plot: z = f(x, y)
         m = re.search(
             r"^(?:3d\s+plot|surface\s+plot)\s+(?:of\s+)?(.+)$", ql
         ) or re.search(r"^plot\s+z\s*=\s*(.+)$", ql)
         if m:
-            return _do_surface(q[q.lower().find(m.group(1)) :])
+            return _do_surface(q[m.start(1) :])
 
         # polar / parametric plots
         m = re.search(r"^polar\s+plot\s+(?:of\s+)?(.+)$", ql)
         if m:
-            return _do_polar(q[q.lower().find(m.group(1)) :])
+            return _do_polar(q[m.start(1) :])
         m = re.search(r"^parametric\s+plot\s+(?:of\s+)?(.+)$", ql)
         if m:
-            return _do_parametric(q[q.lower().find(m.group(1)) :])
+            return _do_parametric(q[m.start(1) :])
 
         # gradient / hessian (multivariable)
         m = re.search(r"^gradient\s+(?:of\s+)?(.+)$", ql)
         if m:
-            return _do_gradient(q[q.lower().find(m.group(1)) :])
+            return _do_gradient(q[m.start(1) :])
         m = re.search(r"^hessian\s+(?:of\s+)?(.+)$", ql)
         if m:
-            return _do_hessian(q[q.lower().find(m.group(1)) :])
+            return _do_hessian(q[m.start(1) :])
 
         # double / triple integral over explicit bounds
         m = re.search(
@@ -1855,11 +2613,8 @@ def solve(query):
             ql,
         )
         if m:
-            body = q[
-                q.lower().find(m.group(1)) : q.lower().find(m.group(1))
-                + len(m.group(1))
-            ]
-            bnds = q[q.lower().find(m.group(2)) :]
+            body = q[m.start(1) : m.end(1)]
+            bnds = q[m.start(2) :]
             return _do_multi_integral(body, bnds)
 
         # definite integral: "... from A to B"
@@ -1868,10 +2623,7 @@ def solve(query):
             ql,
         )
         if m:
-            body = q[
-                q.lower().find(m.group(1)) : q.lower().find(m.group(1))
-                + len(m.group(1))
-            ]
+            body = q[m.start(1) : m.end(1)]
             vn = _integ_var(body)
             return _do_integral(
                 _strip_dv(body), var_name=vn, a=m.group(2), b=m.group(3)
@@ -1883,7 +2635,7 @@ def solve(query):
             ql,
         )
         if m:
-            body = q[q.lower().find(m.group(1)) :]
+            body = q[m.start(1) :]
             vn = _integ_var(body)
             return _do_integral(_strip_dv(body), var_name=vn)
 
@@ -1893,10 +2645,7 @@ def solve(query):
             ql,
         )
         if m:
-            body = q[
-                q.lower().find(m.group(1)) : q.lower().find(m.group(1))
-                + len(m.group(1))
-            ]
+            body = q[m.start(1) : m.end(1)]
             dirn = {"left": "-", "below": "-", "right": "+", "above": "+"}.get(
                 m.group(4)
             )
@@ -1912,10 +2661,8 @@ def solve(query):
             r"(taylor|maclaurin|power)\s+series\s+of\s+(.+)$", ql
         ) or re.search(r"^series\s+(?:expansion\s+)?of\s+(.+)$", ql)
         if m:
-            body_group = (
-                m.group(2) if m.re.groups >= 2 and m.lastindex >= 2 else m.group(1)
-            )
-            body = q[q.lower().find(body_group) :]
+            body_idx = 2 if m.re.groups >= 2 and m.lastindex >= 2 else 1
+            body = q[m.start(body_idx) :]
             about = "0"
             am = re.search(
                 r"\s+(?:about|around|at)\s+([a-z]?\s*=?\s*[^,]+?)(?:\s+to\s+order\s+(\d+))?$",
@@ -1952,10 +2699,7 @@ def solve(query):
         )
         if m:
             is_prod = m.group(1) in ("product", "prod")
-            body = q[
-                q.lower().find(m.group(2)) : q.lower().find(m.group(2))
-                + len(m.group(2))
-            ]
+            body = q[m.start(2) : m.end(2)]
             return _do_summation(
                 body, m.group(3), m.group(4), m.group(5), is_product=is_prod
             )
@@ -1965,10 +2709,7 @@ def solve(query):
             r"tangent\s+(?:line\s+)?to\s+(.+?)\s+at\s+(?:[a-z]\s*=\s*)?(.+?)$", ql
         )
         if m:
-            body = q[
-                q.lower().find(m.group(1)) : q.lower().find(m.group(1))
-                + len(m.group(1))
-            ]
+            body = q[m.start(1) : m.end(1)]
             vn = _pick_var(_P(body)).name
             return _do_tangent(body, vn, m.group(2).strip())
 
@@ -1978,7 +2719,7 @@ def solve(query):
             ql,
         )
         if m:
-            return _do_critical(q[q.lower().find(m.group(1)) :])
+            return _do_critical(q[m.start(1) :])
 
         # differential equation: solve an ODE (contains y', y'', f', ...)
         if re.search(r"\bsolve\b", ql) and re.search(r"[a-z]\s*'", q):
@@ -2000,17 +2741,14 @@ def solve(query):
         # solve / roots / zeros / systems of equations
         m = re.search(r"^solve\s+(.+?)(?:\s+for\s+([a-z]))?$", ql)
         if m:
-            body = q[
-                q.lower().find(m.group(1)) : q.lower().find(m.group(1))
-                + len(m.group(1))
-            ]
+            body = q[m.start(1) : m.end(1)]
             parts = re.split(r"\s*,\s*|\s+and\s+", body)
             if len(parts) >= 2 and sum(1 for p in parts if "=" in p) >= 2:
                 return _do_system(parts)
             return _do_solve(body, var_name=m.group(2))
         m = re.search(r"^(?:roots|zeros|zeroes)\s+of\s+(.+)$", ql)
         if m:
-            return _do_solve(q[q.lower().find(m.group(1)) :])
+            return _do_solve(q[m.start(1) :])
 
         # complex analysis
         m = re.search(
@@ -2025,13 +2763,10 @@ def solve(query):
                 "modulus": "modulus",
                 "argument": "argument",
             }[re.sub(r"\s+", " ", m.group(1))]
-            return _do_complex(cop, q[q.lower().find(m.group(2)) :])
+            return _do_complex(cop, q[m.start(2) :])
         m = re.search(r"^residue\s+(?:of\s+)?(.+?)\s+at\s+([a-z])\s*=\s*(.+)$", ql)
         if m:
-            body = q[
-                q.lower().find(m.group(1)) : q.lower().find(m.group(1))
-                + len(m.group(1))
-            ]
+            body = q[m.start(1) : m.end(1)]
             pt = q[
                 q.rfind("=") + 1 :
             ].strip()  # original case (I is the imaginary unit)
@@ -2040,7 +2775,7 @@ def solve(query):
         # vector calculus
         m = re.search(r"^(divergence|curl)\s+(?:of\s+)?(.+)$", ql)
         if m:
-            return _do_vectorcalc(m.group(1), q[q.lower().find(m.group(2)) :])
+            return _do_vectorcalc(m.group(1), q[m.start(2) :])
 
         # unit conversion
         m = re.search(r"^convert\s+(.+?)\s+([a-z]+)\s+to\s+([a-z]+)\s*$", ql)
@@ -2068,13 +2803,18 @@ def solve(query):
         # algebra helpers
         m = re.search(r"^(simplify|factor|expand)\s+(?:trig\s+)?(.+)$", ql)
         if m:
-            return _do_algebra(m.group(1), q[q.lower().find(m.group(2)) :])
+            return _do_algebra(m.group(1), q[m.start(2) :])
 
         # bare expression fallback
         return _do_expression(q)
 
-    except Exception as e:
-        return {"ok": False, "error": f"Couldn't parse that: {type(e).__name__}: {e}"}
+    except UserError as e:
+        return {"ok": False, "error": str(e)}
+    except RecursionError:
+        return {"ok": False, "error": "That expression is too deeply nested to parse."}
+    except Exception:
+        # Deliberately not surfacing the exception text -- see UserError.
+        return {"ok": False, "error": _GENERIC_PARSE_ERROR}
 
 
 def _integ_var(body):

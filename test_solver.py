@@ -23,7 +23,20 @@ Exit code is non-zero if anything fails.
 import random
 import sys
 
-from sympy import sympify, simplify, diff, Symbol, I, sqrt, pi, E, oo  # noqa: F401
+from sympy import (  # noqa: F401
+    sympify,
+    simplify,
+    diff,
+    Symbol,
+    I,
+    sqrt,
+    pi,
+    E,
+    oo,
+    sin,
+    cos,
+    exp,
+)
 
 from solver import solve
 
@@ -174,12 +187,15 @@ def curated():
     check("differentiate x/(x+1)", want="1/(x + 1)**2", verified=True)
     check("derivative of ln(x^2+1)", want="2*x/(x**2 + 1)", verified=True)
     check("derivative of x^5 - 3x^2 + 2x - 7", want="5*x**4 - 6*x + 2", verified=True)
-    # --- higher-order / partial (computed symbolically -> None, never False) ---
-    check("second derivative of x^4", want="12*x**2", verified=None)
-    check("second derivative of sin(x)", want="-sin(x)", verified=None)
-    check("third derivative of x^5", want="60*x**2", verified=None)
-    check("partial derivative of x^2 y with respect to y", want="x**2", verified=None)
-    check("partial derivative of x^2 y with respect to x", want="2*x*y", verified=None)
+    # --- higher-order / partial: these now carry a real numeric check too.
+    # Higher orders use repeated central differences (larger step, looser
+    # tolerance per order); partials pin the other free symbols to sample
+    # values so d/dy[x^2 y] is actually evaluable. Both used to be None.
+    check("second derivative of x^4", want="12*x**2", verified=True)
+    check("second derivative of sin(x)", want="-sin(x)", verified=True)
+    check("third derivative of x^5", want="60*x**2", verified=True)
+    check("partial derivative of x^2 y with respect to y", want="x**2", verified=True)
+    check("partial derivative of x^2 y with respect to x", want="2*x*y", verified=True)
 
     # --- indefinite integrals (differentiate the answer back to the integrand) ---
     check_antideriv("integrate x^2", "x**2")
@@ -418,9 +434,226 @@ def fuzz(n_exprs=400, seed=12345):
     return checked
 
 
+# ----------------------------------------------------------------- rejection ----
+def rejection():
+    """The direction the suite was missing.
+
+    Everything above proves the verifier says YES to correct answers. That is
+    only half a guarantee: a verifier that returns True unconditionally would
+    pass all of it. These cases feed each _verify_* a deliberately WRONG answer
+    and assert it says NO -- otherwise the badge means nothing.
+    """
+    import solver as S
+
+    v = Symbol("x")
+    f = sin(v) * exp(v)
+    cases = []
+
+    # derivative: wrong by a constant, by a factor, and structurally
+    for label, wrong in [
+        ("derivative +1e-4", diff(f, v) + sympify("1/10000")),
+        ("derivative x1.0008", diff(f, v) * sympify("10008/10000")),
+        ("derivative structural", sympify("cos(x)*exp(x)")),
+    ]:
+        cases.append((label, S._verify_derivative(f, v, wrong)[0]))
+
+    # antiderivative: differentiating it must NOT return the integrand
+    cases.append(
+        ("antiderivative wrong", S._verify_antiderivative(v**2, v, v**3 / 2)[0])
+    )
+    # definite integral: symbolic value disagrees with quadrature
+    cases.append(("definite wrong", S._verify_definite(v**2, v, 0, 3, sympify(10))[0]))
+    # limit: converges to 1, claim 2
+    cases.append(("limit wrong", S._verify_limit(sin(v) / v, v, 0, sympify(2))[0]))
+    # roots: 3 is not a root of x^2-5x+6
+    cases.append(
+        (
+            "roots wrong",
+            S._verify_roots(v**2 - 5 * v + 6, v, [sympify(2), sympify(5)])[0],
+        )
+    )
+    # complex: Re(3+4I) is 3, claim 4
+    cases.append(
+        ("complex wrong", S._verify_complex(sympify("3+4*I"), "re", sympify(4))[0])
+    )
+    # summation: sum k, k=1..10 is 55, claim 56
+    cases.append(
+        ("summation wrong", S._verify_summation(v, v, 1, 10, sympify(56), False)[0])
+    )
+
+    # --- the checks added when coverage was extended from 64% to 100%. ---
+    # A verifier that always returns True is worse than no verifier at all: it
+    # launders wrong answers with a trust badge. Each new check gets fed a
+    # deliberately wrong answer here and must reject it.
+    import sympy as _sp
+
+    M = _sp.Matrix([[1, 2], [3, 4]])  # det -2, rank 2
+    cases.append(("determinant wrong", S._verify_determinant(M, sympify(-3))[0]))
+    cases.append(("rank wrong", S._verify_rank(M, 1)[0]))
+    cases.append(
+        ("transpose wrong", S._verify_transpose(M, _sp.Matrix([[1, 3], [2, 5]]))[0])
+    )
+    # not in RREF: pivot column has another nonzero entry
+    cases.append(
+        ("rref not reduced", S._verify_rref(M, _sp.Matrix([[1, 0], [1, 1]]))[0])
+    )
+    # rank-destroying "rref"
+    cases.append(
+        ("rref rank changed", S._verify_rref(M, _sp.Matrix([[1, 2], [0, 0]]))[0])
+    )
+
+    y = Symbol("y")
+    g = v**2 * y
+    cases.append(("gradient wrong", S._verify_gradient(g, [v, y], [2 * v * y, v])[0]))
+    cases.append(
+        (
+            "hessian wrong",
+            S._verify_hessian(g, [v, y], _sp.Matrix([[2 * y, 2 * v], [2 * v, 1]]))[0],
+        )
+    )
+    # d^2/dx^2 x^4 is 12x^2, claim 12x^2 + 1
+    cases.append(
+        ("2nd derivative wrong", S._verify_nth_derivative(v**4, v, 12 * v**2 + 1, 2)[0])
+    )
+
+    data = [sympify(k) for k in (1, 2, 3, 4)]
+    cases.append(("median wrong", S._verify_stats(data, "median", sympify(3))[0]))
+    cases.append(("variance wrong", S._verify_stats(data, "variance", sympify(2))[0]))
+    cases.append(("std wrong", S._verify_stats(data, "std", sympify(2))[0]))
+    # sample variance of 1..4 is 5/3; the population figure 5/4 must be rejected
+    cases.append(
+        (
+            "sample variance confused with population",
+            S._verify_stats(data, "variance", sympify("5/4"), sample=True)[0],
+        )
+    )
+
+    cases.append(("trace wrong", S._verify_trace(M, sympify(6))[0]))  # the real trace is 5
+    mdata = [sympify(k) for k in (1, 2, 2, 3)]
+    cases.append(("mode wrong value", S._verify_mode(mdata, [sympify(3)], 2)[0]))
+    cases.append(("mode wrong count", S._verify_mode(mdata, [sympify(2)], 3)[0]))
+
+    z = Symbol("z")
+    cases.append(
+        ("residue wrong", S._verify_residue(1 / z, z, sympify(0), sympify(2))[0])
+    )
+    # 5 km is 3.10686 miles, not 3
+    cases.append(
+        (
+            "conversion wrong",
+            S._verify_convert(sympify(5), "km", "miles", sympify(3))[0],
+        )
+    )
+    # dimensionally impossible
+    cases.append(
+        (
+            "conversion across dimensions",
+            S._verify_convert(sympify(5), "km", "kg", sympify(5))[0],
+        )
+    )
+
+    for label, verdict in cases:
+        problems = []
+        if verdict is not True and verdict is not False:
+            problems.append(
+                "verifier returned %r (no opinion) on a WRONG answer — it should reject"
+                % (verdict,)
+            )
+        elif verdict is True:
+            problems.append("verifier ACCEPTED a deliberately wrong answer")
+        _record("rejection: " + label, problems)
+    return len(cases)
+
+
+# ------------------------------------------------------------------- reading ----
+def reading():
+    """Parse-intent regressions.
+
+    The verifier confirms the math on what was PARSED; it cannot confirm the
+    parse matched intent. These are the inputs where those two diverge, so each
+    must carry a reading_risk warning rather than a bare "verified" badge.
+    Everything in the second list is unambiguous and must NOT be flagged --
+    a warning on every query is a warning nobody reads.
+    """
+    ambiguous = [
+        "derivative of sin x cos x",  # -> sin(x*cos(x)), not sin(x)*cos(x)
+        "derivative of e^2x",  # -> x*e^2,      not e^(2x)
+        "integral of 1/2x",  # -> (1/2)*x,   not 1/(2x)
+        "derivative of x^2y",
+    ]
+    clear = [
+        "derivative of x^2 sin(x)",
+        "derivative of sin(x)*cos(x)",
+        "derivative of sin x",
+        "integral of x^2 from 0 to 3",
+        "integral of sin x dx",
+        "tangent to x^2 at x=1",
+        "limit of sin(x)/x as x -> 0",
+        "solve x^2 - 5x + 6 = 0",
+        "real part of 3+4i",
+    ]
+    n = 0
+    for q in ambiguous:
+        r = solve(q)
+        problems = []
+        if not r.get("ok"):
+            problems.append("did not solve at all")
+        elif not r.get("reading_risk"):
+            problems.append(
+                "ambiguous notation was NOT flagged — badge would overclaim"
+            )
+        _record("reading(ambiguous) " + q, problems)
+        n += 1
+    for q in clear:
+        r = solve(q)
+        problems = []
+        if r.get("ok") and r.get("reading_risk"):
+            problems.append(
+                "false alarm on unambiguous input: %s" % r["reading_risk"][:60]
+            )
+        _record("reading(clear) " + q, problems)
+        n += 1
+
+    # No internal exception text may reach the user.
+    leaky = [
+        "is x prime",
+        "factor 12 and 18",
+        "derivative of cos^2 x",
+        "mean of 5",
+        "hello world",
+    ]
+    for q in leaky:
+        r = solve(q)
+        err = str(r.get("error", ""))
+        problems = []
+        for marker in (
+            "SyntaxError",
+            "TypeError",
+            "AttributeError",
+            "Traceback",
+            "sympy",
+            "<string>",
+        ):
+            if marker in err:
+                problems.append("internal detail leaked to user: %r" % marker)
+        if (
+            r.get("ok")
+            and r.get("answer_str", "").count("*") >= 4
+            and any(c.isalpha() for c in q.split()[0])
+        ):
+            problems.append(
+                "prose fabricated a letter-product answer: %s" % r.get("answer_str")
+            )
+        _record("reading(no-leak) " + q, problems)
+        n += 1
+    return n
+
+
 # --------------------------------------------------------------------- main ----
 def main():
     curated()
+    rejection()
+    reading()
     n_fuzz = fuzz()
     print("=" * 60)
     print("curated + fuzz problems checked: %d (fuzz: %d)" % (_TOTAL, n_fuzz))

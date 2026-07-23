@@ -108,6 +108,13 @@
   .estep-val.estep-err{color:var(--warn);font-size:13px}
   .card .body{padding:8px 16px 16px}
   .prob{color:var(--muted);font-size:13px;margin:8px 2px 2px}
+  /* The verifier confirms the math on what was PARSED, not that the parse
+     matched intent. When the notation is ambiguous the reading gets promoted
+     from a muted footnote to something you have to look at. */
+  .prob.risk{color:var(--warn);background:var(--warn-bg);border:1px solid var(--warn);
+    border-radius:8px;padding:8px 10px;margin:8px 2px 4px}
+  .prob.risk .rlabel{font-weight:600}
+  .prob.risk .rwhy{display:block;margin-top:5px;font-size:12.5px;opacity:.95}
   .answer{padding:12px 4px;overflow-x:auto}
   .answer .katex-display{margin:.25em 0}
   .vnote{font-size:12.5px;color:var(--muted);margin:2px 4px 4px}
@@ -127,6 +134,10 @@
   .teachout p{margin:0 0 8px;font-size:14px;line-height:1.6;color:var(--ink);white-space:pre-wrap}
   .teachout p:last-child{margin-bottom:0}
   .teachout .teacherr{color:var(--warn)}
+  /* The tutor is the only user-visible model-written text in the app. It says so. */
+  .teachout .teachnote{margin-top:8px;padding-top:7px;border-top:1px dashed var(--border,#33415577);
+    font-size:12px;line-height:1.5;color:var(--muted)}
+  .teachout .teachdrift{color:var(--warn);font-weight:600;border-top-color:var(--warn)}
   .plot{width:100%;height:300px;margin-top:8px}
   .err{color:#c0392b;background:rgba(192,57,43,.08);border:1px solid rgba(192,57,43,.25);border-radius:12px;padding:12px 14px;font-size:14.5px}
   @media (prefers-color-scheme:dark){.err{color:#ff8a7a;background:rgba(255,90,80,.08);border-color:rgba(255,90,80,.25)}}
@@ -142,7 +153,7 @@
     <h1>Exact</h1>
     <span class="tag">verified by SymPy</span>
   </header>
-  <div class="sub">Snap a photo of a problem, or type it in plain math. Every answer is computed by a real computer-algebra engine and <b>numerically re-checked</b> before it's shown — so the math is never guessed.</div>
+  <div class="sub">Snap a photo of a problem, or type it in plain math. Every answer is computed by a real computer-algebra engine — <b>never by a language model</b> — then <b>re-checked by a second, independent method</b> before display. The badge on each answer tells you which guarantee you got.</div>
 
   <div class="askbar">
     <form class="ask" id="ask" autocomplete="off">
@@ -166,14 +177,16 @@
   <div id="results"></div>
 
   <footer>
-    The math runs entirely in your browser and is numerically re-checked before it's shown. Photos are read by Claude vision using <b>your own API key</b>, straight from your browser — nothing is uploaded or stored.<br />
+    The math runs entirely in your browser and is re-checked by a second, independent method before display — the badge says which guarantee you got, and <b>· Exact (SymPy)</b> means no independent check applied. Photos are read by Claude vision using <b>your own API key</b>, straight from your browser — nothing is uploaded or stored.<br />
     Examples: <code>integrate 1/(1+x^2) from 0 to 1</code> · <code>limit of sin(x)/x as x-&gt;0</code> · <code>taylor series of e^x</code>
   </footer>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg" crossorigin="anonymous"></script>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" integrity="sha384-cCVCZkAjYNxaYKbM8lsArLznDF/SvMFr1jcZrvOpSTCa0W40ZAdLzHCEulnUa5i7" crossorigin="anonymous" charset="utf-8"></script>
-<script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js" integrity="sha384-i3R37b3tF+HWudsUf1VSEOY2YxwSNMqY8DQa9Z0O3xh+NkJ9o+yjcGyIi5huj+nB" crossorigin="anonymous"></script>
+<!-- Pyodide is NOT loaded here: it runs inside the solve worker, which fetches it
+     and verifies the same SHA-384 hash before evaluating it (see PYODIDE_SRI). -->
+
 <script>
 const EXAMPLES = [
   "derivative of x^2 sin(x)",
@@ -188,13 +201,13 @@ const EXAMPLES = [
 
 const $ = (s)=>document.querySelector(s);
 const results = $("#results");
-let solveJson = null;
+let engineReady = false;
 
 // example chips
 const chipBox = $("#chips");
 EXAMPLES.forEach(ex=>{
   const c=document.createElement("span"); c.className="chip"; c.textContent=ex;
-  c.onclick=()=>{ $("#q").value=ex; if(solveJson) handleSubmit(ex); };
+  c.onclick=()=>{ $("#q").value=ex; if(engineReady) handleSubmit(ex); };
   chipBox.appendChild(c);
 });
 
@@ -210,7 +223,12 @@ function km(tex, el, display){
   catch(e){ el.textContent = tex; }
 }
 
-function badge(v){
+// The badge must never claim more than was actually checked. A numeric check
+// confirms SymPy operated correctly on what it PARSED — it cannot confirm the
+// parse matched what you meant. When the notation is ambiguous, say so rather
+// than stamping a plain "Verified" on a possibly-misread problem.
+function badge(v, risk){
+  if(risk)      return ['warn','✓ Math checked · reading unsure'];
   if(v===true)  return ['ok','✓ Verified'];
   if(v===false) return ['warn','⚠ Unverified'];
   return ['neutral','· Exact (SymPy)'];
@@ -267,7 +285,7 @@ function render(res){
     results.prepend(card); return;
   }
 
-  const [bcls,btxt]=badge(res.verified);
+  const [bcls,btxt]=badge(res.verified, res.reading_risk);
   const head=document.createElement("div"); head.className="head";
   head.innerHTML='<span class="kind"></span><span class="badge '+bcls+'"></span>';
   head.querySelector(".kind").textContent=res.type||"result";
@@ -277,9 +295,14 @@ function render(res){
   const body=document.createElement("div"); body.className="body";
 
   if(res.input_latex){
-    const p=document.createElement("div"); p.className="prob";
-    const lab=document.createElement("span"); lab.textContent="Interpreted as  "; p.appendChild(lab);
+    const risk=res.reading_risk;
+    const p=document.createElement("div"); p.className=risk?"prob risk":"prob";
+    const lab=document.createElement("span");
+    lab.className=risk?"rlabel":"";
+    lab.textContent=risk?"⚠ Read as  ":"Interpreted as  ";
+    p.appendChild(lab);
     const mel=document.createElement("span"); km(res.input_latex, mel, false); p.appendChild(mel);
+    if(risk){ const why=document.createElement("span"); why.className="rwhy"; why.textContent=risk; p.appendChild(why); }
     body.appendChild(p);
   }
 
@@ -322,6 +345,17 @@ function render(res){
         String(txt||"").split(/\n\n+/).forEach(p=>{ const t=p.trim(); if(!t) return;
           const pel=document.createElement("p"); pel.textContent=t; out.appendChild(pel); });
         if(!out.querySelector("p")){ const pel=document.createElement("p"); pel.textContent=String(txt||"").trim(); out.appendChild(pel); }
+        // This is the one place model-written text is user-visible. The answer
+        // above is SymPy's and stays authoritative, but a reader shouldn't have
+        // to know that — say it, and actively check the prose for a number that
+        // contradicts the verified answer rather than assuming it agrees.
+        const drift=tutorDisagrees(res, txt);
+        const note=document.createElement("div");
+        note.className=drift?"teachnote teachdrift":"teachnote";
+        note.textContent=drift
+          ? "⚠ This explanation states a different value than the verified answer above. Trust the answer, not the explanation."
+          : "Written by Claude from the verified answer above. If the two ever disagree, the answer is the one that was checked.";
+        out.appendChild(note);
         out.classList.remove("hidden"); btn.classList.add("hidden");
       }catch(err){
         out.innerHTML=""; const e=document.createElement("p"); e.className="teacherr"; e.textContent=err.message||"Couldn't get an explanation."; out.appendChild(e);
@@ -365,7 +399,7 @@ function renderExtend(t, stepResults){
     const r=s.result;
     if(r && r.ok){
       const m=document.createElement("span"); km(r.answer_latex||r.answer_str||"", m, false); val.appendChild(m);
-      const [bc,bt]=badge(r.verified); const b=document.createElement("span"); b.className="badge "+bc+" mini"; b.textContent=bt; val.appendChild(b);
+      const [bc,bt]=badge(r.verified, r.reading_risk); const b=document.createElement("span"); b.className="badge "+bc+" mini"; b.textContent=bt; val.appendChild(b);
     } else {
       val.classList.add("estep-err"); val.textContent=(r && r.error) ? r.error : "couldn't compute this step";
     }
@@ -376,20 +410,140 @@ function renderExtend(t, stepResults){
   results.prepend(card);
 }
 
+// The worker fetches Pyodide itself, so it has to re-do the integrity check the
+// <script integrity="..."> attribute performs on the main thread. Same hash,
+// verified with SubtleCrypto before a single byte is evaluated — moving work off
+// the main thread shouldn't cost the supply-chain guarantee.
+const PYODIDE_BASE = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/";
+const PYODIDE_SRI  = "sha384-i3R37b3tF+HWudsUf1VSEOY2YxwSNMqY8DQa9Z0O3xh+NkJ9o+yjcGyIi5huj+nB";
+
+const WORKER_SRC = `
+const BASE = ${JSON.stringify(PYODIDE_BASE)};
+const SRI  = ${JSON.stringify(PYODIDE_SRI)};
+let solveFn = null;
+const post = (o) => self.postMessage(o);
+
+async function loadVerified(url, sri){
+  const res = await fetch(url, { mode:"cors" });
+  if(!res.ok) throw new Error("could not fetch " + url);
+  const buf = await res.arrayBuffer();
+  const algo = sri.slice(0, sri.indexOf("-")).replace("sha", "SHA-");
+  const want = sri.slice(sri.indexOf("-") + 1);
+  const digest = await crypto.subtle.digest(algo, buf);
+  let bin = ""; new Uint8Array(digest).forEach(b => { bin += String.fromCharCode(b); });
+  if(btoa(bin) !== want) throw new Error("integrity check failed for " + url);
+  (0, eval)(new TextDecoder().decode(buf));
+}
+
+async function init(solverUrl){
+  post({ kind:"status", text:"Loading the engine\\u2026" });
+  await loadVerified(BASE + "pyodide.js", SRI);
+  const pyodide = await loadPyodide({ indexURL: BASE });
+  post({ kind:"status", text:"Loading SymPy\\u2026" });
+  await pyodide.loadPackage("sympy");
+  post({ kind:"status", text:"Starting engine\\u2026" });
+  const src = await (await fetch(solverUrl)).text();
+  pyodide.runPython(src);
+  const fn = pyodide.globals.get("solve_json");
+  solveFn = (q) => fn(q);
+  try{ solveFn("derivative of x"); }catch(e){}   // warm up: the first call is slow
+  post({ kind:"ready" });
+}
+
+self.onmessage = async (e) => {
+  const d = e.data || {};
+  if(d.kind === "init"){
+    try{ await init(d.solverUrl); }
+    catch(err){ post({ kind:"bootfail", error:String((err && err.message) || err) }); }
+    return;
+  }
+  if(!solveFn){ post({ id:d.id, ok:false, error:"The engine is still starting \\u2014 try again in a moment." }); return; }
+  try{ post({ id:d.id, ok:true, json: solveFn(d.q) }); }
+  catch(err){ post({ id:d.id, ok:false, error:"The engine couldn't handle that input." }); }
+};
+`;
+
 // Local-first solve. The regex engine handles clean input instantly (free, offline);
 // the LLM only runs on a parse miss or clearly plain-English input (Phase 1: Understand).
-const localSolve = (q)=> new Promise((resolve)=>{
-  // defer so the UI can paint "Solving…" before the (blocking) sympy call
-  setTimeout(()=>{
-    try{ resolve(JSON.parse(solveJson(q))); }
-    catch(e){ resolve({ ok:false, error:"Engine error: "+e.message }); }
-  }, 20);
-});
+//
+// SymPy runs in a Web Worker, not on the main thread. Some perfectly ordinary
+// input makes it grind — `solve x^5 - x - 1 = 0` takes over a minute — and on
+// the main thread that froze the whole tab with no way to cancel. In a worker
+// the page stays responsive and a runaway computation can simply be killed.
+const SOLVE_TIMEOUT_MS = 8000;
+const pending = new Map();
+let worker = null, nextId = 1, bootResolve = null, readyPromise = null;
+
+function spawnWorker(){
+  const blob = new Blob([WORKER_SRC], { type:"application/javascript" });
+  const url = URL.createObjectURL(blob);
+  const w = new Worker(url);
+  URL.revokeObjectURL(url);
+  w.onmessage = (e)=>{
+    const d = e.data || {};
+    if(d.kind === "status"){ if(!engineReady) setStatus(d.text, true); return; }
+    if(d.kind === "ready"){ if(bootResolve){ bootResolve({ ok:true }); bootResolve=null; } return; }
+    if(d.kind === "bootfail"){ if(bootResolve){ bootResolve({ ok:false, error:d.error }); bootResolve=null; } return; }
+    const p = pending.get(d.id);
+    if(!p) return;                       // a late reply from a killed computation
+    clearTimeout(p.timer); pending.delete(d.id);
+    if(d.ok){ try{ p.resolve(JSON.parse(d.json)); } catch(err){ p.resolve({ ok:false, error:"Engine returned malformed output." }); } }
+    else p.resolve({ ok:false, error:d.error || "Engine error." });
+  };
+  w.onerror = ()=>{
+    if(bootResolve){ bootResolve({ ok:false, error:"the engine worker failed to start" }); bootResolve=null; }
+  };
+  return w;
+}
+
+// Bring a worker up and expose a promise for "engine is usable".
+function bringUpWorker(){
+  worker = spawnWorker();
+  readyPromise = new Promise(res => { bootResolve = res; }).then(r => {
+    engineReady = !!(r && r.ok);
+    return r;
+  });
+  worker.postMessage({ kind:"init", solverUrl:new URL("./solver.py?v=2", location.href).href });
+  return readyPromise;
+}
+
+// Kill a wedged worker and bring a fresh one up, so the app recovers on its own
+// instead of being dead until reload. Reboot takes a few seconds (Pyodide has to
+// come back), which is why localSolve waits on readyPromise rather than failing.
+function restartWorker(){
+  try{ worker.terminate(); }catch(e){}
+  for(const [, p] of pending){ clearTimeout(p.timer); p.resolve({ ok:false, error:"Engine restarted." }); }
+  pending.clear();
+  engineReady = false;
+  bringUpWorker();
+}
+
+const localSolve = async (q)=>{
+  if(!worker) return { ok:false, error:"The engine isn't running. Reload the page." };
+  if(!engineReady){
+    setStatus("Restarting the engine…", true);
+    const r = await readyPromise;
+    if(!(r && r.ok)) return { ok:false, error:"The engine failed to restart. Reload the page." };
+    setStatus(null);
+  }
+  return new Promise((resolve)=>{
+    const id = nextId++;
+    const timer = setTimeout(()=>{
+      pending.delete(id);
+      restartWorker();
+      resolve({ ok:false, error:"That one takes too long to compute exactly, so it was stopped after "
+        + (SOLVE_TIMEOUT_MS/1000) + " seconds. High-degree polynomials (like x^5 - x - 1) have no "
+        + "closed form and can run for minutes — try a numeric or lower-degree version." });
+    }, SOLVE_TIMEOUT_MS);
+    pending.set(id, { resolve, timer });
+    worker.postMessage({ id, q });
+  });
+};
 const scrollTop = ()=> window.scrollTo({ top:0, behavior:"smooth" });
 
 async function handleSubmit(q){
   q = (q || "").trim();
-  if(!solveJson || !q) return;
+  if(!worker || !q) return;
   readPreview.classList.add("hidden");
   setStatus("Solving…", true);
   const local = await localSolve(q);
@@ -595,6 +749,34 @@ function looksLikeNaturalLanguage(q){
 
 // ---- Teach: narrate an ALREADY-VERIFIED answer (the model never changes the number) ----
 const TEACH_MODEL = "claude-sonnet-5"; // a stronger model teaches better; the visitor pays
+// The verified answer as a plain number, or null when it's symbolic (2*x) and
+// there is nothing numeric to compare against.
+function numericAnswer(res){
+  for(const c of [res.approx, res.answer_str]){
+    const t=String(c||"").trim();
+    if(/^-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?$/.test(t)) return Number(t);
+  }
+  return null;
+}
+
+const WORD_NUM={zero:0,one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,eleven:11,twelve:12};
+
+// True when the tutor's prose quotes numbers but none of them match the verified
+// answer — i.e. it is describing a different result. Deliberately conservative:
+// a single match anywhere clears it, because the explanation legitimately cites
+// intermediate values, coefficients and exponents. The cost of a false alarm is
+// one cautious sentence; the cost of a miss is an unflagged contradiction.
+function tutorDisagrees(res, txt){
+  const target=numericAnswer(res);
+  if(target===null) return false;
+  const s=String(txt||"");
+  const nums=(s.match(/-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?/g)||[]).map(Number).filter(Number.isFinite);
+  for(const [w,v] of Object.entries(WORD_NUM)) if(new RegExp("\\b"+w+"\\b","i").test(s)) nums.push(v);
+  if(!nums.length) return false;                       // no numeric claim at all
+  const tol=Math.max(1e-6*(1+Math.abs(target)), 0.005*Math.abs(target));
+  return !nums.some(n=>Math.abs(n-target)<=tol);
+}
+
 async function teachWithClaude(res){
   const problem = res.input_latex || res.type || "";
   const steps = (res.steps || []).slice(0, 12).join("  ;  ");
@@ -707,22 +889,14 @@ function showRead(latex, message, opts){
 }
 
 async function boot(){
-  try{
-    const pyodide = await loadPyodide();
-    setStatus('Loading SymPy…', true);
-    await pyodide.loadPackage("sympy");
-    setStatus('Starting engine…', true);
-    const src = await (await fetch("./solver.py?v=1")).text();
-    pyodide.runPython(src);
-    const fn = pyodide.globals.get("solve_json");
-    solveJson = (q)=> fn(q);
-    // warm up (first call is slow) with something trivial, off-screen
-    try{ fn("derivative of x"); }catch(e){}
-    setStatus(null);
-    $("#q").disabled=false; $("#go").disabled=false; $("#cam").disabled=false; $("#q").focus();
-  }catch(err){
-    setStatus('Failed to load the engine: '+err.message+'. Check your connection and reload.', false);
+  const r = await bringUpWorker();
+  if(!r.ok){
+    setStatus('Failed to load the engine: '+(r.error||'unknown error')+'. Check your connection and reload.', false);
+    return;
   }
+  engineReady = true;
+  setStatus(null);
+  $("#q").disabled=false; $("#go").disabled=false; $("#cam").disabled=false; $("#q").focus();
 }
 boot();
 </script>

@@ -1,9 +1,12 @@
-# Exact — a math solver that verifies its own answers
+# Exact — a math solver that shows its work on *why you should believe it*
 
-Type a math problem (or snap a photo of one) and get an answer that is **computed by a
-real computer-algebra system and numerically re-checked before it's shown** — so the
-math is never guessed. Covers calculus, algebra, linear algebra, differential
-equations, statistics, and more. Runs entirely in your browser.
+Type a math problem (or snap a photo of one) and get an answer **computed by a real
+computer-algebra system, never by a language model** — then re-checked by a *second,
+independent method* before it's shown. Measured: **62 of 63 operations across every
+family carry an independent check**, and the badge on each answer tells you exactly
+which guarantee you got, including the rare case where you don't get one. Covers
+calculus, algebra, linear algebra, differential equations, statistics, and more.
+Runs entirely in your browser.
 
 **▶ [Live demo](https://exactmath.vercel.app)** · desktop or phone.
 
@@ -14,23 +17,68 @@ algebra mistakes. WolframAlpha is reliable because it's a *computer-algebra syst
 (CAS), not an AI. Exact uses the same principle, with one rule:
 
 > **The LLM never does the math.** It only helps with *language* — reading a photo,
-> and (soon) understanding plain-English problems and explaining answers. Every
-> number is computed by SymPy and independently re-verified.
+> understanding plain-English problems, and explaining answers. Every number you see
+> is computed by SymPy. The model only ever emits a *command string*; it never
+> produces a result, and this is enforced structurally, not by prompt.
 
 1. **Parse** — your input (`derivative of x^2 sin(x)`) → a precise SymPy expression.
 2. **Compute** — [SymPy](https://www.sympy.org), a real CAS compiled to WebAssembly
    via [Pyodide](https://pyodide.org), does the calculus exactly, in your browser.
-3. **Verify** — every answer is *independently re-checked numerically* before display:
-   - derivatives → central finite-difference at several sample points
-   - indefinite integrals → differentiate the answer, confirm it returns the integrand
-   - definite integrals → compare against independent numerical integration
-   - limits → approach the point numerically and confirm convergence
-   - roots / critical points → substitute back and confirm ≈ 0
+3. **Verify** — the answer is re-checked before display by a route *different from the
+   one that produced it*. Asking SymPy the same question twice would verify nothing,
+   so each check is a genuinely separate implementation:
 
-The badge states the confidence: **✓ Verified** (numeric check passed), **· Exact**
-(symbolic, numeric check not applicable), or **⚠ Unverified** (a check disagreed —
-shown honestly instead of a confident wrong answer). When SymPy genuinely can't solve
-something, it says so rather than guessing.
+   | Operation | How it's independently checked |
+   |---|---|
+   | derivatives (incl. partial) | central finite differences at 8 points, tolerance `1e-7` |
+   | higher-order derivatives | repeated central differences, step and tolerance scaled per order |
+   | gradient · Hessian | finite differences on every partial, including the mixed ones |
+   | definite integrals | mpmath quadrature |
+   | limits | approached numerically, convergence confirmed |
+   | roots · critical points | substituted back, confirmed ≈ 0 |
+   | determinant | hand-rolled Gaussian elimination with partial pivoting |
+   | rank | hand-rolled row reduction — pivots counted directly |
+   | rref | RREF invariants checked structurally + rank preservation |
+   | transpose · trace | entry-by-entry / diagonal summed directly |
+   | mean · median · variance · std | plain-Python floats, and the `E[x²] − E[x]²` identity rather than the sum-of-squared-deviations formula the engine uses |
+   | mode | occurrences recounted independently |
+   | primality | a separately-implemented Miller–Rabin, or an exhibited divisor |
+   | complex operations | recomputed in plain Python `complex` arithmetic |
+   | residue | numeric contour integral — `(1/2πi) ∮ f dz`, the definition |
+   | unit conversion | a hand-entered SI table (1 in = 0.0254 m exactly, …) |
+
+   **Measured coverage: 62 of 63 operations (98%) across every family carry an
+   independent check.** The one that doesn't is a *divergent* definite integral, where
+   the answer is ∞ and there is no finite value to compare against — it says so.
+
+   One check is weaker than the others, and it's worth naming rather than burying:
+   **indefinite integrals** are verified by differentiating the answer and confirming
+   it returns the integrand. That's worth doing (differentiation is far more reliable
+   than integration), but it is *SymPy checking SymPy* — a cross-check, not a second
+   independent engine.
+
+   The sample points are **derived per-expression** from a stable hash of the input,
+   not drawn from a fixed list. Same input → same points on every run and identically
+   under CPython and Pyodide, so a verdict never flickers; but a blind spot can't be
+   permanent the way it is when every problem is probed at the same eight abscissae.
+
+The badge states exactly what you got:
+
+| Badge | Means |
+|---|---|
+| **✓ Verified** | An independent check ran and passed. |
+| **· Exact (SymPy)** | Computed symbolically; no independent check applied (e.g. a divergent integral). |
+| **⚠ Unverified** | A check disagreed — shown honestly instead of a confident wrong answer. |
+| **✓ Math checked · reading unsure** | The arithmetic checked out, but your input used notation that parses ambiguously. |
+
+That last badge exists because of a real limitation worth naming: **a numeric check
+confirms the math on what was *parsed*, not that the parse matched what you meant.**
+`sin x cos x` is a legal reading as `sin(x·cos x)`, and a verifier will happily confirm
+the derivative *of that*. So when the input uses notation with more than one defensible
+reading (`sin x cos x`, `e^2x`, `1/2x`), Exact shows the reading it chose in an
+impossible-to-miss box and downgrades the badge rather than stamping a plain ✓ on a
+possibly-misread problem. When SymPy genuinely can't solve something, it says so
+rather than guessing.
 
 ## What it solves
 
@@ -49,8 +97,28 @@ something, it says so rather than guessing.
 - **Plots** — 2D functions, polar, parametric, and interactive 3D surfaces
 
 Input is Wolfram-style math: `2x`, `x^2`, `sin x`, `e^x`, `|x|`, `->`, `pi`, `oo`,
-matrices as `{{1,2},{3,4}}`, `y'`/`y''` for ODE derivatives. Every numeric answer is
-independently re-verified before it's shown.
+matrices as `{{1,2},{3,4}}`, `y'`/`y''` for ODE derivatives. Complex numbers accept
+either `3+4i` or `3+4I`.
+
+### Known limits
+
+Named rather than buried, because a tool about trust shouldn't be coy about its own
+edges:
+
+- **The badge certifies the parse, not your intent.** See above — ambiguous notation is
+  flagged, but a reading you don't check is a reading you're trusting. This is the
+  real ceiling on the guarantee, and no amount of numeric checking raises it.
+- **The antiderivative check is SymPy checking SymPy**, not a second engine.
+- **The tutor is model-written prose.** The headline answer is always SymPy's, but the
+  "✨ Explain like a tutor" text is generated. It's labelled as such, and its numbers
+  are checked against the verified answer — if they disagree, the panel says so.
+- **Long computations are cut off at 8 seconds.** Some ordinary-looking input has no
+  closed form — `solve x^5 - x - 1 = 0` runs for over a minute in SymPy. The engine runs
+  in a Web Worker and is killed and restarted on overrun, so the page never freezes, but
+  you get a timeout message instead of an answer.
+- **Unrecognized phrasing is refused, not guessed.** The implicit-multiplication parser
+  would otherwise read `mean of 5` as `5·E·a·f·m·n·o` and badge it as exact.
+- **First load fetches ~15 MB** (Pyodide + SymPy), then it's cached.
 
 ## Photo input & AI features — bring your own key
 
@@ -79,9 +147,14 @@ is uploaded or stored. Clear it anytime from the 🔑 panel. Get a key from the
 
 ## Architecture
 
-- `index.html` — the whole UI (inline CSS/JS). Loads Pyodide (SymPy → WebAssembly),
-  KaTeX (math rendering), and Plotly (graphs) from CDNs with SRI. AI calls go
-  **browser-direct** to the Anthropic API with the visitor's own key — no backend.
+- `index.html` — the whole UI (inline CSS/JS). Loads KaTeX (math rendering) and Plotly
+  (graphs) from CDNs with SRI. AI calls go **browser-direct** to the Anthropic API with
+  the visitor's own key — no backend.
+- **The solve worker** — SymPy runs in a Web Worker, not on the main thread, so a slow
+  computation can't freeze the tab and can be killed on timeout. The worker fetches
+  Pyodide itself and re-verifies the same SHA-384 hash the `<script integrity>`
+  attribute would have enforced, before evaluating a byte of it — moving work off the
+  main thread shouldn't cost the supply-chain guarantee.
 - `solver.py` — the entire engine (parse → compute → verify → steps → plot spec).
   Pure Python (SymPy only); the same file runs under CPython and in the browser via
   Pyodide, so there is one source of truth. `solve_json(query)` is the entry point.
@@ -102,14 +175,27 @@ python3 -m http.server 8000
 ## Correctness
 
 `solver.py` is a single source of truth: the **same** code runs the checks in CPython
-and the verifier live in the browser, so **every answer a user sees is numerically
-confirmed as it's shown.**
+and the verifier live in the browser, so a green run here is the same verifier a user
+gets — no drift between what's tested and what ships.
 
-`test_solver.py` is the committable harness — **81 curated known-answer cases** (each
-compared by SymPy equivalence, not string match; indefinite integrals are checked by
-differentiating the answer back to the integrand) plus a deterministic **800-problem
-fuzz** that asserts the verifier never falsely flags a correct result. 881 checks,
-all passing:
+`test_solver.py` is the committable harness, **986 checks, all passing**:
+
+- **81 curated known-answer cases**, compared by SymPy equivalence rather than string
+  match (indefinite integrals are checked by differentiating back to the integrand).
+- **A deterministic 800-problem fuzz** asserting the verifier never *falsely flags* a
+  correct result.
+- **A rejection suite** — the direction that actually matters. The two above only prove
+  the verifier says *yes* to right answers, which a function that returns `True`
+  unconditionally would also pass. This one feeds **every** `_verify_*` a deliberately
+  wrong answer and asserts it says **no**: derivatives off by `1e-4`, a wrong
+  determinant, an understated rank, a matrix that isn't really in RREF, a rank-
+  destroying "row reduction", a wrong mixed second partial, a sample variance quoted
+  where the population figure belongs, a wrong residue, a bad unit conversion, a
+  conversion between incompatible dimensions. Each was confirmed non-vacuous by
+  stubbing its verifier to always accept and watching the suite fail.
+- **A parse-intent suite** pinning the ambiguous-notation cases (`sin x cos x`, `e^2x`,
+  `1/2x`) as flagged and unambiguous ones as clean, plus assertions that no internal
+  exception text (`SyntaxError`, `TypeError`, tracebacks) can reach a user.
 
 ```bash
 python3 -m venv venv && ./venv/bin/pip install sympy
