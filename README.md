@@ -70,9 +70,42 @@ The badge states exactly what you got:
 | **· Exact (SymPy)** | Computed symbolically; no independent check applied (e.g. a divergent integral). |
 | **⚠ Unverified** | A check disagreed — shown honestly instead of a confident wrong answer. |
 | **✓ Math checked · reading unsure** | The arithmetic checked out, but your input used notation that parses ambiguously. |
+| **⚙✓ Setup cross-checked** | A word problem or plain-English request whose setup was derived **twice, independently** — both readings reached the same answer. |
+| **⚠ Readings disagree** | The two independent readings reached *different* answers. Both computations are verified; they disagree about what the problem is asking. |
 
-That last badge exists because of a real limitation worth naming: **a numeric check
-confirms the math on what was *parsed*, not that the parse matched what you meant.**
+### Verifying the setup, not just the arithmetic
+
+There's a harder problem underneath the badges, and it's the one that actually
+matters. A numeric check protects the *cheap* part: arithmetic is what SymPy already
+does perfectly. But in the photo and plain-English flows the **model chooses the
+problem** — the interpretation, the setup, which quantity is the unknown. Choosing the
+wrong setup is far more consequential than an arithmetic slip, and the CAS will then
+flawlessly, "verifiably", solve the wrong thing.
+
+You can't check a setup by computing harder. So Exact derives it **twice,
+independently**, and compares the two verified answers. Two properties make that a
+real check rather than theatre:
+
+1. **The second reading is blind to the first.** If it saw the first setup it would
+   anchor to it and agreement would mean nothing. It's a separate call with a
+   deliberately different framing — name the unknown and the givens first, *then*
+   write commands — so the two attempts fail differently instead of making the same
+   mistake twice.
+2. **The comparison is on the CAS's answers, not the model's text.** Two correct
+   setups routinely produce different command strings. Numeric answers compare
+   directly; symbolic ones are compared by asking the CAS whether their difference
+   simplifies to zero — using the engine to check itself, which is what it's for.
+
+Agreement is evidence. Disagreement is **shown, never resolved by silently picking
+one**. And "couldn't compare" is its own third state, reported as *not cross-checked*
+rather than quietly counted as agreement.
+
+This costs a second model call on your own key, and it only runs when the model chose
+the setup — typed commands never touch the network.
+
+The parse-vs-intent badge exists because of a related limitation worth naming: **a
+numeric check confirms the math on what was *parsed*, not that the parse matched what
+you meant.**
 `sin x cos x` is a legal reading as `sin(x·cos x)`, and a verifier will happily confirm
 the derivative *of that*. So when the input uses notation with more than one defensible
 reading (`sin x cos x`, `e^2x`, `1/2x`), Exact shows the reading it chose in an
@@ -106,8 +139,11 @@ Named rather than buried, because a tool about trust shouldn't be coy about its 
 edges:
 
 - **The badge certifies the parse, not your intent.** See above — ambiguous notation is
-  flagged, but a reading you don't check is a reading you're trusting. This is the
-  real ceiling on the guarantee, and no amount of numeric checking raises it.
+  flagged, but a reading you don't check is a reading you're trusting.
+- **Setup cross-checking is agreement, not proof.** Two independent readings landing on
+  the same answer is real evidence, and it's the strongest check available for
+  something a computation can't validate — but two readings can still be wrong the
+  same way. It raises the floor; it doesn't close the gap.
 - **The antiderivative check is SymPy checking SymPy**, not a second engine.
 - **The tutor is model-written prose.** The headline answer is always SymPy's, but the
   "✨ Explain like a tutor" text is generated. It's labelled as such, and its numbers
@@ -178,7 +214,7 @@ python3 -m http.server 8000
 and the verifier live in the browser, so a green run here is the same verifier a user
 gets — no drift between what's tested and what ships.
 
-`test_solver.py` is the committable harness, **986 checks, all passing**:
+`test_solver.py` is the committable harness, **993 checks, all passing**:
 
 - **81 curated known-answer cases**, compared by SymPy equivalence rather than string
   match (indefinite integrals are checked by differentiating back to the integrand).

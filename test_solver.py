@@ -528,7 +528,9 @@ def rejection():
         )
     )
 
-    cases.append(("trace wrong", S._verify_trace(M, sympify(6))[0]))  # the real trace is 5
+    cases.append(
+        ("trace wrong", S._verify_trace(M, sympify(6))[0])
+    )  # the real trace is 5
     mdata = [sympify(k) for k in (1, 2, 2, 3)]
     cases.append(("mode wrong value", S._verify_mode(mdata, [sympify(3)], 2)[0]))
     cases.append(("mode wrong count", S._verify_mode(mdata, [sympify(2)], 3)[0]))
@@ -615,6 +617,31 @@ def reading():
         n += 1
 
     # No internal exception text may reach the user.
+    # `simplify(x)` with no space is as natural to type as `simplify x`, and it
+    # used to fall through to the bare-expression fallback and get refused as
+    # unreadable prose. It is also the form the setup cross-check emits.
+    for q, want in [
+        ("simplify((2*x) - (x*2))", "0"),
+        ("simplify(x^2-1)/(x-1)", None),
+        ("factor(x^2-9)", "(x - 3)*(x + 3)"),
+        ("expand((x+1)^2)", "x**2 + 2*x + 1"),
+    ]:
+        r = solve(q)
+        problems = []
+        if not r.get("ok"):
+            problems.append("not ok: %s" % r.get("error"))
+        elif want is not None and not _sym_eq(r.get("answer_str", ""), want):
+            problems.append("answer %r != %r" % (r.get("answer_str"), want))
+        _record("paren-form " + q, problems)
+        n += 1
+    # ...while the spaced forms keep working exactly as before.
+    for q in ("factor 360", "simplify (x^2-1)/(x-1)", "expand (x+1)^3"):
+        r = solve(q)
+        _record(
+            "spaced-form " + q, [] if r.get("ok") else ["not ok: %s" % r.get("error")]
+        )
+        n += 1
+
     leaky = [
         "is x prime",
         "factor 12 and 18",

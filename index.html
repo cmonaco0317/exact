@@ -100,6 +100,11 @@
   .badge.setup{color:var(--setup);background:var(--setup-bg)}
   .badge.mini{font-size:11px;padding:2px 7px;margin-left:8px;vertical-align:middle}
   .setupcap{font-size:12.5px;color:var(--setup);background:var(--setup-bg);border-radius:8px;padding:7px 10px;margin:2px 4px 6px}
+  /* Outcome of deriving the setup a second time, independently. */
+  .xcheck{font-size:12.5px;border-radius:8px;padding:7px 10px;margin:2px 4px 6px;line-height:1.5}
+  .xcheck.agree{color:var(--ok);background:var(--ok-bg)}
+  .xcheck.disagree{color:var(--warn);background:var(--warn-bg);border:1px solid var(--warn);font-weight:600}
+  .xcheck.unchecked{color:var(--muted);background:var(--neutral-bg)}
   details.extend .setuptext{padding:8px 4px;color:var(--muted);font-size:13.5px;line-height:1.55;white-space:pre-wrap;border-bottom:1px solid var(--line)}
   .estep{padding:9px 4px;border-bottom:1px solid var(--line)}
   .estep:last-child{border-bottom:0}
@@ -234,6 +239,24 @@ function badge(v, risk){
   return ['neutral','· Exact (SymPy)'];
 }
 
+// Renders the outcome of the independent second reading. Never claims more than
+// happened: "unchecked" is its own state, distinct from agreement.
+function xcheckEl(cross){
+  if(!cross) return null;
+  const el=document.createElement("div");
+  el.className="xcheck "+cross.state;
+  if(cross.state==="agree"){
+    el.textContent="✓ Setup cross-checked — a second, independent reading of your problem reached the same answer.";
+  }else if(cross.state==="disagree"){
+    const other=(cross.other && (cross.other.approx || cross.other.answer_str)) || "a different result";
+    el.textContent="⚠ The two readings disagree. Read a second way, this problem gives "+other
+      +". The arithmetic is verified either way — the disagreement is about what the problem is asking, so check the setup yourself before trusting either.";
+  }else{
+    el.textContent="⚙ Setup not cross-checked"+(cross.note?" — "+cross.note:"")+". The computations are verified; the way the problem was set up is not.";
+  }
+  return el;
+}
+
 function themeColors(){
   const cs=getComputedStyle(document.body);
   return { ink:cs.getPropertyValue('--ink').trim(), muted:cs.getPropertyValue('--muted').trim(),
@@ -276,7 +299,7 @@ function drawPlot(el, spec){
   Plotly.newPlot(el, data, layout, {responsive:true, displayModeBar:false});
 }
 
-function render(res){
+function render(res, cross){
   const card=document.createElement("div"); card.className="card";
 
   if(!res.ok){
@@ -312,6 +335,8 @@ function render(res){
   if(res.approx){ const ap=document.createElement("div"); ap.className="approx"; ap.textContent="≈ "+res.approx; body.appendChild(ap); }
 
   if(res.verify_note){ const vn=document.createElement("div"); vn.className="vnote"; vn.textContent=res.verify_note; body.appendChild(vn); }
+
+  const xc=xcheckEl(cross); if(xc) body.appendChild(xc);
 
   if(res.steps && res.steps.length){
     const d=document.createElement("details"); d.className="steps";
@@ -371,12 +396,15 @@ function render(res){
 
 // Phase 3 (Extend): render a word-problem result — verified answer + ⚙ badge up top,
 // the AI setup + per-step verified computations tucked into an expandable section.
-function renderExtend(t, stepResults){
+function renderExtend(t, stepResults, cross){
   const card=document.createElement("div"); card.className="card";
   const head=document.createElement("div"); head.className="head";
   head.innerHTML='<span class="kind"></span><span class="badge setup"></span>';
   head.querySelector(".kind").textContent="word problem";
-  head.querySelector(".badge").textContent="⚙ Setup by AI";
+  const bd=head.querySelector(".badge");
+  if(cross && cross.state==="agree"){ bd.className="badge ok"; bd.textContent="⚙✓ Setup cross-checked"; }
+  else if(cross && cross.state==="disagree"){ bd.className="badge warn"; bd.textContent="⚠ Readings disagree"; }
+  else { bd.textContent="⚙ Setup by AI"; }
   card.appendChild(head);
 
   const body=document.createElement("div"); body.className="body";
@@ -386,8 +414,9 @@ function renderExtend(t, stepResults){
   body.appendChild(ans);
 
   const cap=document.createElement("div"); cap.className="setupcap";
-  cap.textContent="Set up by AI — each computation below is independently verified; the setup itself is not.";
+  cap.textContent="Set up by AI — each computation below is independently verified by the CAS.";
   body.appendChild(cap);
+  const xc=xcheckEl(cross); if(xc) body.appendChild(xc);
 
   const d=document.createElement("details"); d.className="steps extend";
   const sm=document.createElement("summary"); sm.textContent="How this was set up"; d.appendChild(sm);
@@ -566,8 +595,14 @@ async function handleSubmit(q){
     setStatus("Working through it…", true);
     const stepResults = [];
     for(const s of t.steps){ stepResults.push({ label:s.label, command:s.command, result: await localSolve(s.command) }); }
+    // The setup is the model's, so check it the only way a setup can be
+    // checked: derive it again independently and see if the answers land in
+    // the same place. Costs a second model call on the visitor's own key.
+    setStatus("Checking the setup a second way…", true);
+    const last = stepResults.length ? stepResults[stepResults.length-1].result : null;
+    const cross = await crossCheckSetup(q, last);
     setStatus(null);
-    renderExtend(t, stepResults);
+    renderExtend(t, stepResults, cross);
     scrollTop();
     return;
   }
@@ -580,9 +615,13 @@ async function handleSubmit(q){
   }
   // confident -> auto-solve, with the interpretation shown so a misread is catchable
   const res = await localSolve(t.query);
+  // The model chose this reading, so it gets the same independent second
+  // opinion the word-problem path gets.
+  setStatus("Checking the reading a second way…", true);
+  const cross = await crossCheckSetup(q, res);
   setStatus(null);
   showRead(t.latex || "", "", { head:"Understood as:", hint:null });
-  render(res);
+  render(res, cross);
   scrollTop();
 }
 
@@ -775,6 +814,98 @@ function tutorDisagrees(res, txt){
   if(!nums.length) return false;                       // no numeric claim at all
   const tol=Math.max(1e-6*(1+Math.abs(target)), 0.005*Math.abs(target));
   return !nums.some(n=>Math.abs(n-target)<=tol);
+}
+
+// ---------------------------------------------------------------------------
+//  Setup cross-verification
+//
+//  The engine's guarantee has always covered the arithmetic. But in the photo
+//  and plain-English flows the MODEL chooses the problem — the interpretation,
+//  the setup, which quantity is the unknown — and the CAS then flawlessly, and
+//  "verifiably", solves whatever it was handed. A wrong setup produces a
+//  confidently verified answer to a different question, which is the more
+//  consequential failure and the one a numeric check cannot see.
+//
+//  So: derive the setup TWICE, independently, and compare the two VERIFIED
+//  ANSWERS. Two things make this a real check rather than theatre —
+//    1. the second reading is BLIND to the first. If it saw the first setup it
+//       would anchor to it, and agreement would mean nothing.
+//    2. the comparison is on the CAS's answers, not on the model's text or its
+//       command strings, which can differ freely while agreeing.
+//  Agreement between two independent readings is evidence. Disagreement is
+//  surfaced, never silently resolved by picking one.
+// ---------------------------------------------------------------------------
+
+// A second reading with a deliberately different framing, so the two attempts
+// fail differently instead of making the same mistake twice.
+async function translateAgainBlind(text){
+  const out = await anthropic(
+    "You convert a student's plain-English MATH request into commands for a symbolic solver. You never do arithmetic yourself. " +
+    "Work in this order: FIRST name the quantity being asked for and the quantities that are given, THEN write the relationship between them, and ONLY THEN emit commands. " +
+    "Prefer the most direct formulation; do not pad with unnecessary intermediate steps. " +
+    "For a single computation return kind=\"single\" with one \"query\". For an applied problem needing a setup plus several computations, return kind=\"steps\" with an ordered \"steps\" array whose LAST step yields the final answer. " +
+    "Every command MUST fit the grammar exactly; substitute numbers directly for evaluation, and use single-letter variable names only. " +
+    "If the solver cannot express it, set found=false. Reply with ONLY one JSON object, no prose, no code fences.",
+    [{ type:"text", text:
+      "Identify the unknown, then produce JSON:\n" +
+      '{"found": true|false, "kind": "single"|"steps", "query": "<command if single>", ' +
+      '"steps": [{"label":"<what it computes>","command":"<command>"}]}\n' +
+      "Grammar: " + GRAMMAR + "\n\nRequest: " + text }]
+  );
+  let p; try{ p = JSON.parse(out); }catch(e){ return null; }
+  if(!p || p.found === false) return null;
+  if(p.kind === "steps" && Array.isArray(p.steps)){
+    const steps = p.steps.filter(s=>s && s.command).map(s=>({ label:String(s.label||""), command:String(s.command) }));
+    return steps.length ? { kind:"steps", steps } : null;
+  }
+  return p.query ? { kind:"single", query:String(p.query) } : null;
+}
+
+// Run a reading all the way to its final CAS-verified answer.
+async function finalAnswerOf(t){
+  if(!t) return null;
+  if(t.kind === "steps"){
+    let last = null;
+    for(const s of t.steps) last = await localSolve(s.command);
+    return last;
+  }
+  return t.query ? await localSolve(t.query) : null;
+}
+
+// Do two verified answers agree? Returns true / false / null (can't tell).
+// `null` is a real outcome and must not be reported as agreement: two symbolic
+// forms we can't compare is not the same as two forms that match.
+async function answersAgree(a, b){
+  if(!a || !b || !a.ok || !b.ok) return null;
+  const na = Number(a.approx || a.answer_str), nb = Number(b.approx || b.answer_str);
+  if(Number.isFinite(na) && Number.isFinite(nb)){
+    return Math.abs(na - nb) <= 1e-6 * (1 + Math.abs(na));
+  }
+  const sa = String(a.answer_str||"").trim(), sb = String(b.answer_str||"").trim();
+  if(!sa || !sb) return null;
+  if(sa === sb) return true;
+  // Symbolic forms can differ and still be equal ("2*x" vs "x*2"), so let the
+  // CAS decide rather than comparing strings — that is what it is for.
+  if(/[<>=,;]|does not|diverge/i.test(sa+sb)) return null;   // not a plain value
+  try{
+    const d = await localSolve(`simplify (${sa}) - (${sb})`);
+    if(d && d.ok && /^0$/.test(String(d.answer_str||"").trim())) return true;
+    if(d && d.ok) return false;
+  }catch(e){}
+  return null;
+}
+
+// Second, blind reading -> {state, note}. state: "agree" | "disagree" | "unchecked"
+async function crossCheckSetup(text, firstResult){
+  let second;
+  try{ second = await translateAgainBlind(text); }
+  catch(e){ return { state:"unchecked", note:"the second reading couldn't be obtained" }; }
+  if(!second) return { state:"unchecked", note:"the second reading couldn't express this problem" };
+  const other = await finalAnswerOf(second);
+  const agree = await answersAgree(firstResult, other);
+  if(agree === true) return { state:"agree", other };
+  if(agree === false) return { state:"disagree", other };
+  return { state:"unchecked", note:"the two readings produced answers that couldn't be compared", other };
 }
 
 async function teachWithClaude(res){

@@ -2801,7 +2801,12 @@ def _solve(query):
             return _do_expression(f"{m.group(1)}({m.group(2)}, {m.group(3)})")
 
         # algebra helpers
-        m = re.search(r"^(simplify|factor|expand)\s+(?:trig\s+)?(.+)$", ql)
+        # `\s+` OR a following "(" — people type `simplify(x^2-1)` as readily as
+        # `simplify x^2-1`, and without the lookahead the paren form fell through
+        # to the bare-expression fallback and was refused as unreadable prose.
+        m = re.search(
+            r"^(simplify|factor|expand)(?:\s+|(?=\())\s*(?:trig\s+)?(.+)$", ql
+        )
         if m:
             return _do_algebra(m.group(1), q[m.start(2) :])
 
