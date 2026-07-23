@@ -51,6 +51,17 @@
   form.askwork button{align-self:flex-end;height:38px}
   .workhint{font-size:12.5px;color:var(--muted);margin:8px 4px 0;line-height:1.5}
   .workhint b{color:var(--ok)}
+  /* guided mode: the running trail of accepted steps */
+  .gtrail{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    box-shadow:var(--shadow);padding:10px 14px;margin-top:12px}
+  .gline{display:flex;gap:9px;align-items:flex-start;padding:6px 0}
+  .gline .gm{font-weight:700;width:15px;flex:0 0 auto;text-align:center}
+  .gline.ok .gm{color:var(--ok)} .gline.no .gm{color:var(--warn)} .gline.q .gm{color:var(--muted)}
+  .gline .gt{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;overflow-x:auto}
+  .gline .gn{font-size:12.5px;color:var(--muted);margin-top:2px}
+  .gline.no .gn{color:var(--warn);font-weight:600}
+  .gdone{margin-top:8px;padding:8px 10px;border-radius:8px;background:var(--ok-bg);color:var(--ok);
+    font-size:13px;font-weight:600}
   /* per-step verdicts for "check my work" */
   .wsteps{margin:6px 0 0}
   .wstep{display:flex;gap:9px;align-items:flex-start;padding:8px 4px;border-bottom:1px solid var(--line)}
@@ -187,6 +198,7 @@
   <div class="modes" role="tablist" aria-label="Mode">
     <button id="mode-solve" type="button" class="modebtn on" role="tab" aria-selected="true">Solve it</button>
     <button id="mode-check" type="button" class="modebtn" role="tab" aria-selected="false">Check my work</button>
+    <button id="mode-guide" type="button" class="modebtn" role="tab" aria-selected="false">Guide me</button>
   </div>
 
   <div class="askbar">
@@ -194,6 +206,10 @@
       <button id="cam" type="button" class="cambtn" title="Solve from a photo" aria-label="Solve from a photo" disabled>📷</button>
       <input id="q" name="q" placeholder="derivative of x^2 sin(x)" inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false" disabled />
       <button id="go" type="submit" disabled>Solve</button>
+    </form>
+    <form class="ask askguide hidden" id="askguide" autocomplete="off">
+      <input id="guide" name="guide" placeholder="Start with the problem, e.g. 2x + 6 = 10" inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false" />
+      <button id="goguide" type="submit" disabled>Next step</button>
     </form>
     <form class="ask askwork hidden" id="askwork" autocomplete="off">
       <textarea id="work" rows="5" spellcheck="false" autocapitalize="off" autocorrect="off"
@@ -203,6 +219,8 @@
     <input id="photo" type="file" accept="image/*" capture="environment" class="hidden" />
   </div>
   <div id="workhint" class="workhint hidden">Every line is checked against the one above it, and you get the first line that breaks. Runs entirely offline — <b>no API key needed</b>.</div>
+  <div id="guidehint" class="workhint hidden">You drive. Type the problem, then each step you'd take — the CAS judges every one, so it <b>can't tell you you're wrong when you're right</b>. It won't hand you the answer. Offline, no key.</div>
+  <div id="guidetrail" class="gtrail hidden"></div>
 
   <div class="keyrow" id="keyrow">
     <button id="keytoggle" type="button" class="keychip" aria-expanded="false">🔑 <span id="keystate">Add your API key</span></button>
@@ -513,6 +531,7 @@ const BASE = ${JSON.stringify(PYODIDE_BASE)};
 const SRI  = ${JSON.stringify(PYODIDE_SRI)};
 let solveFn = null;
 let checkFn = null;
+let stepFn = null;
 const post = (o) => self.postMessage(o);
 
 async function loadVerified(url, sri){
@@ -538,8 +557,10 @@ async function init(solverUrl){
   pyodide.runPython(src);
   const fn = pyodide.globals.get("solve_json");
   const cw = pyodide.globals.get("check_work_json");
+  const cs = pyodide.globals.get("check_step_json");
   solveFn = (q) => fn(q);
   checkFn = (w) => cw(w);
+  stepFn = (a, b) => cs(a, b);
   try{ solveFn("derivative of x"); }catch(e){}   // warm up: the first call is slow
   post({ kind:"ready" });
 }
@@ -552,7 +573,9 @@ self.onmessage = async (e) => {
     return;
   }
   if(!solveFn){ post({ id:d.id, ok:false, error:"The engine is still starting \\u2014 try again in a moment." }); return; }
-  try{ post({ id:d.id, ok:true, json: d.mode === "check" ? checkFn(d.q) : solveFn(d.q) }); }
+  try{ post({ id:d.id, ok:true, json: d.mode === "check" ? checkFn(d.q)
+                          : d.mode === "step" ? stepFn(d.prev, d.q)
+                          : solveFn(d.q) }); }
   catch(err){ post({ id:d.id, ok:false, error:"The engine couldn't handle that input." }); }
 };
 `;
@@ -612,7 +635,7 @@ function restartWorker(){
   bringUpWorker();
 }
 
-const localSolve = async (q, mode)=>{
+const localSolve = async (q, mode, prev)=>{
   if(!worker) return { ok:false, error:"The engine isn't running. Reload the page." };
   if(!engineReady){
     setStatus("Restarting the engine…", true);
@@ -630,7 +653,7 @@ const localSolve = async (q, mode)=>{
         + "closed form and can run for minutes — try a numeric or lower-degree version." });
     }, SOLVE_TIMEOUT_MS);
     pending.set(id, { resolve, timer });
-    worker.postMessage({ id, q, mode });
+    worker.postMessage({ id, q, mode, prev });
   });
 };
 const scrollTop = ()=> window.scrollTo({ top:0, behavior:"smooth" });
@@ -697,20 +720,79 @@ $("#ask").addEventListener("submit",(e)=>{ e.preventDefault(); handleSubmit($("#
 // billing with Solve rather than being buried — and it needs no API key, which
 // is the point: the most differentiating feature shouldn't be the paywalled one.
 function setMode(m){
-  const check = m === "check";
-  $("#mode-solve").classList.toggle("on", !check);
-  $("#mode-check").classList.toggle("on", check);
-  $("#mode-solve").setAttribute("aria-selected", String(!check));
-  $("#mode-check").setAttribute("aria-selected", String(check));
-  $("#ask").classList.toggle("hidden", check);
-  $("#askwork").classList.toggle("hidden", !check);
-  $("#workhint").classList.toggle("hidden", !check);
-  $("#keyrow").classList.toggle("hidden", check);   // no key is involved here
-  $("#chips").classList.toggle("hidden", check);
-  (check ? $("#work") : $("#q")).focus();
+  for(const [id, name] of [["#mode-solve","solve"],["#mode-check","check"],["#mode-guide","guide"]]){
+    $(id).classList.toggle("on", m===name);
+    $(id).setAttribute("aria-selected", String(m===name));
+  }
+  $("#ask").classList.toggle("hidden", m!=="solve");
+  $("#askwork").classList.toggle("hidden", m!=="check");
+  $("#askguide").classList.toggle("hidden", m!=="guide");
+  $("#workhint").classList.toggle("hidden", m!=="check");
+  $("#guidehint").classList.toggle("hidden", m!=="guide");
+  $("#chips").classList.toggle("hidden", m!=="solve");
+  $("#keyrow").classList.toggle("hidden", m!=="solve");   // no key in check/guide
+  if(m!=="guide") resetGuide();
+  ({solve:$("#q"), check:$("#work"), guide:$("#guide")})[m].focus();
 }
 $("#mode-solve").onclick = ()=>setMode("solve");
 $("#mode-check").onclick = ()=>setMode("check");
+$("#mode-guide").onclick = ()=>setMode("guide");
+
+// ---- guided mode ----------------------------------------------------------
+// The failure that erodes trust in an LLM tutor is being told a correct step is
+// wrong. Here the verdict on every step is the CAS's, not a model's, so that
+// cannot happen — and it never volunteers the answer, only whether YOUR move
+// was legal. Entirely offline; no key.
+let guideTrail = [];   // [{text, status, note}]
+function resetGuide(){
+  guideTrail = [];
+  const t=$("#guidetrail"); t.innerHTML=""; t.classList.add("hidden");
+  $("#guide").placeholder = "Start with the problem, e.g. 2x + 6 = 10";
+  $("#goguide").textContent = "Next step";
+}
+function renderGuide(done){
+  const t=$("#guidetrail"); t.innerHTML=""; t.classList.remove("hidden");
+  guideTrail.forEach((s,i)=>{
+    const row=document.createElement("div");
+    row.className="gline "+(s.status==="wrong"?"no":s.status==="start"?"q":"ok");
+    const m=document.createElement("div"); m.className="gm";
+    m.textContent = s.status==="start" ? "▸" : s.status==="wrong" ? "✗" : s.status==="unreadable" ? "–" : "✓";
+    const b=document.createElement("div"); b.style.minWidth="0";
+    const tx=document.createElement("div"); tx.className="gt"; tx.textContent=s.text;
+    b.appendChild(tx);
+    if(s.note){ const n=document.createElement("div"); n.className="gn"; n.textContent=s.note; b.appendChild(n); }
+    row.append(m,b); t.appendChild(row);
+  });
+  if(done){
+    const d=document.createElement("div"); d.className="gdone";
+    d.textContent="Solved — and every step to get there was checked. You did that, not the tool.";
+    t.appendChild(d);
+  }
+}
+async function handleGuide(text){
+  text=(text||"").trim();
+  if(!worker || !text) return;
+  if(!guideTrail.length){                       // first entry = the problem itself
+    guideTrail.push({ text, status:"start", note:"Your problem. What's your first step?" });
+    $("#guide").value=""; $("#guide").placeholder="your next step…";
+    renderGuide(false);
+    return;
+  }
+  const prev = [...guideTrail].reverse().find(s=>s.status==="start"||s.status==="ok");
+  setStatus("Checking that step…", true);
+  const r = await localSolve(text, "step", prev.text);
+  setStatus(null);
+  if(!r.ok){ guideTrail.push({ text, status:"wrong", note:r.error||"Couldn't read that." }); renderGuide(false); $("#guide").value=""; return; }
+  guideTrail.push({ text, status:r.status, note:r.note });
+  renderGuide(!!r.solved);
+  $("#guide").value="";
+  if(r.solved){ $("#goguide").textContent="Start over"; }
+}
+$("#askguide").addEventListener("submit",(e)=>{
+  e.preventDefault();
+  if($("#goguide").textContent==="Start over"){ resetGuide(); return; }
+  handleGuide($("#guide").value);
+});
 
 async function handleCheck(text){
   if(!worker || !(text||"").trim()) return;
@@ -1164,7 +1246,7 @@ async function boot(){
   engineReady = true;
   setStatus(null);
   $("#q").disabled=false; $("#go").disabled=false; $("#cam").disabled=false;
-  $("#gowork").disabled=false;
+  $("#gowork").disabled=false; $("#goguide").disabled=false;
   $("#q").focus();
 }
 boot();

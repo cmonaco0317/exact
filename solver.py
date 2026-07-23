@@ -2985,6 +2985,104 @@ def check_work(raw):
     )
 
 
+def check_step(previous, step):
+    """Judge ONE step a student just proposed, against the line before it.
+
+    This is the ground-truth half of the guided mode. The important property is
+    the one that breaks trust in LLM tutors when it fails: it must never tell a
+    student their correct step is wrong. So the verdict is the CAS's -- the same
+    equivalence check `check_work` uses -- and a model, if one is even involved,
+    only ever phrases the hint. It never decides.
+    """
+    prev = (_line_pairs(previous) or [""])[-1]
+    nxt = (_line_pairs(step) or [""])[0]
+    if not prev or not nxt:
+        raise UserError(
+            "Give me the line you're working from and the step you want to take."
+        )
+    if _prose_tokens(prev.replace("=", " ")) or _prose_tokens(nxt.replace("=", " ")):
+        return {
+            "ok": True,
+            "status": "unreadable",
+            "note": "I couldn't read that as math, so I can't judge it — try writing it as an equation or expression.",
+            "solved": False,
+        }
+    is_eq = "=" in prev and "=" in nxt
+    try:
+        if is_eq:
+            syms = set()
+            for ln in (prev, nxt):
+                try:
+                    syms |= _P(ln.replace("=", "-(") + ")").free_symbols
+                except Exception:
+                    pass
+            var = _pick_var(sp.Add(*syms) if syms else Symbol("x"))
+            sa, sb = _solset(prev, var), _solset(nxt, var)
+            partial = False
+            if sa == sb:
+                status, note = (
+                    "ok",
+                    f"That holds — same solution set: {{{', '.join(sa) or 'none'}}}.",
+                )
+            elif sb and set(sb) < set(sa):
+                partial = True
+                left = [s for s in sa if s not in set(sb)]
+                status = "ok"
+                note = f"Valid — that's one of the solutions. Still to find: {', '.join(left)}."
+            else:
+                extra = [s for s in sb if s not in set(sa)]
+                status = "wrong"
+                note = (
+                    f"That introduces {', '.join(extra)}, which doesn't satisfy the line you started from."
+                    if extra
+                    else "That changes which values solve the equation."
+                )
+            # "Solved" = a bare `x = value` AND nothing left to find. Naming one
+            # root of two is a valid step but not the end of the problem —
+            # calling it done would close a guided session early.
+            lhs, rhs = nxt.split("=", 1)
+            solved = (
+                status == "ok"
+                and not partial
+                and _P(lhs).free_symbols == {var}
+                and _P(lhs) == var
+                and not _P(rhs).free_symbols
+            )
+        else:
+            d = simplify(_P(prev) - _P(nxt))
+            if d == 0:
+                status, note = (
+                    "ok",
+                    "That holds — algebraically identical to what you started from.",
+                )
+            else:
+                status, note = "wrong", f"Not equivalent — the two differ by {d}."
+            solved = False
+    except UserError:
+        raise
+    except Exception:
+        return {
+            "ok": True,
+            "status": "unreadable",
+            "note": "I couldn't parse that step — check the notation and try again.",
+            "solved": False,
+        }
+    return {"ok": True, "status": status, "note": note, "solved": bool(solved)}
+
+
+def check_step_json(previous, step):
+    """JSON wrapper for the browser."""
+    import json
+
+    try:
+        r = check_step(previous, step)
+    except UserError as e:
+        r = {"ok": False, "error": str(e)}
+    except Exception:
+        r = {"ok": False, "error": _GENERIC_PARSE_ERROR}
+    return json.dumps(r, default=lambda o: str(o))
+
+
 def check_work_json(raw):
     """JSON wrapper for the browser, mirroring solve_json."""
     import json

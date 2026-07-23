@@ -144,6 +144,26 @@ Two things make this the right shape for a CAS:
 **It needs no API key and no network.** That's deliberate: the most differentiating
 thing the tool does shouldn't be the part behind a paywall.
 
+## "Guide me" — a tutor that can't mis-correct you
+
+You drive. Type the problem, then each step you'd take. Every step is judged by the
+**CAS**, not by a model:
+
+```
+▸ 2x + 6 = 10     Your problem. What's your first step?
+✗ 2x = 16         That introduces 8, which doesn't satisfy the line you started from.
+✓ 2x = 4          That holds — same solution set: {2}.
+✓ x = 2           Solved — and every step to get there was checked.
+```
+
+The failure that erodes trust in an LLM tutor is being told a correct step is wrong.
+Here that can't happen: the verdict comes from the same equivalence check the solver
+uses, so a legal move is always accepted. It also never volunteers the answer — only
+whether *your* move was legal — and a mistake doesn't poison the session, because the
+next step is checked against the last line that actually held.
+
+Offline, no key.
+
 ## What it solves
 
 - **Calculus** — derivatives (higher-order, partial, gradient, Hessian), indefinite/
@@ -248,7 +268,7 @@ python3 -m http.server 8000
 and the verifier live in the browser, so a green run here is the same verifier a user
 gets — no drift between what's tested and what ships.
 
-`test_solver.py` is the committable harness, **1010 checks, all passing**:
+`test_solver.py` is the committable harness, **1019 checks, all passing**:
 
 - **81 curated known-answer cases**, compared by SymPy equivalence rather than string
   match (indefinite integrals are checked by differentiating back to the integrand).

@@ -720,6 +720,37 @@ def checkwork():
     cw("invented root", "x^2 - 5x + 6 = 0\n(x-2)(x-3) = 0\nx = 5", False, 2)
     cw("error on the third step", "3(x - 4) = 9\n3x - 12 = 9\n3x = 20\nx = 20/3", False, 2)
 
+    # --- guided mode: the verdict on a single proposed step ---
+    # The failure that destroys trust in a tutor is being told a CORRECT step is
+    # wrong, so that direction is pinned hardest.
+    from solver import check_step
+
+    def st(label, prev, step, want_status, want_solved=None):
+        nonlocal n
+        n += 1
+        problems = []
+        try:
+            r = check_step(prev, step)
+        except Exception as e:
+            _record("step " + label, ["raised %s" % type(e).__name__])
+            return
+        if r.get("status") != want_status:
+            problems.append("status=%r expected %r" % (r.get("status"), want_status))
+        if want_solved is not None and r.get("solved") is not want_solved:
+            problems.append("solved=%r expected %r" % (r.get("solved"), want_solved))
+        _record("step " + label, problems)
+
+    st("legal move", "2x + 6 = 10", "2x = 4", "ok", False)
+    st("legal + finishes", "2x = 4", "x = 2", "ok", True)
+    st("legal factoring", "x^2-5x+6=0", "(x-2)(x-3)=0", "ok", False)
+    st("legal expansion", "(a+b)^2", "a^2+2*a*b+b^2", "ok", False)
+    st("illegal move", "2x + 6 = 10", "2x = 16", "wrong")
+    st("invented root", "(x-2)(x-3)=0", "x = 5", "wrong")
+    st("classic error", "(a+b)^2", "a^2+b^2", "wrong")
+    # naming one root is legal but must NOT end the session early
+    st("one root of two", "(x-2)(x-3)=0", "x = 2", "ok", False)
+    st("prose is not judged wrong", "2x = 4", "hmm not sure", "unreadable")
+
     # --- honest about what it could not read ---
     cw("prose line leaves a gap", "my working below\nx^2 + 2x\nx(x+2)", None)
     for bad in ("", "x = 2"):
