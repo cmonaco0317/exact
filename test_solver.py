@@ -676,11 +676,68 @@ def reading():
     return n
 
 
+# ---------------------------------------------------------------- check my work ----
+def checkwork():
+    """"Check my work" verifies the USER's reasoning, so its failure modes are
+    inverted: a false alarm tells a correct student they are wrong, which is
+    worse than not shipping the feature at all. These pin both directions."""
+    from solver import check_work
+
+    n = 0
+
+    def cw(label, work, expect_verified, expect_bad=_NOTSET):
+        nonlocal n
+        n += 1
+        problems = []
+        try:
+            r = check_work(work)
+        except Exception as e:
+            _record("checkwork " + label, ["raised %s: %s" % (type(e).__name__, e)])
+            return
+        if r.get("verified") is not expect_verified:
+            problems.append("verified=%r expected %r" % (r.get("verified"), expect_verified))
+        if expect_bad is not _NOTSET and r.get("first_bad") != expect_bad:
+            problems.append("first_bad=%r expected %r" % (r.get("first_bad"), expect_bad))
+        _record("checkwork " + label, problems)
+
+    # --- correct work must PASS (a false alarm is the worst failure here) ---
+    cw("linear solve", "2x + 6 = 10\n2x = 4\nx = 2", True, None)
+    cw("multi-step linear", "3(x - 4) = 9\n3x - 12 = 9\n3x = 21\nx = 7", True, None)
+    cw("factoring is equivalent", "x^2 - 5x + 6 = 0\n(x-2)(x-3) = 0", True, None)
+    cw("expression identity", "x^2 + 2x\nx(x + 2)", True, None)
+    cw("trig identity", "sin(x)^2 + cos(x)^2\n1", True, None)
+    # Enumerating one root of several is how solutions are WRITTEN, not an error.
+    cw("naming one root of two", "x^2 - 5x + 6 = 0\n(x-2)(x-3) = 0\nx = 2", True, None)
+    # Decorations students actually type must not break the parse.
+    cw("numbered lines", "1. 2x + 6 = 10\n2. 2x = 4\n3. x = 2", True, None)
+    cw("leading-equals continuation", "x^2 + 2x\n= x(x + 2)", True, None)
+    cw("integration constant dropped", "x^3/3 + C\nx^3/3", True, None)
+
+    # --- wrong work must be CAUGHT, at the right line ---
+    cw("sign slip on line 2", "2x + 6 = 10\n2x = 16\nx = 8", False, 1)
+    cw("freshman square expansion", "(a+b)^2\na^2 + b^2", False, 1)
+    cw("bad cancel", "(x^2-1)/(x-1)\nx - 1", False, 1)
+    cw("invented root", "x^2 - 5x + 6 = 0\n(x-2)(x-3) = 0\nx = 5", False, 2)
+    cw("error on the third step", "3(x - 4) = 9\n3x - 12 = 9\n3x = 20\nx = 20/3", False, 2)
+
+    # --- honest about what it could not read ---
+    cw("prose line leaves a gap", "my working below\nx^2 + 2x\nx(x+2)", None)
+    for bad in ("", "x = 2"):
+        n += 1
+        try:
+            check_work(bad)
+            _record("checkwork rejects too-short input %r" % bad, ["accepted it"])
+        except Exception:
+            _record("checkwork rejects too-short input %r" % bad, [])
+    return n
+
+
 # --------------------------------------------------------------------- main ----
 def main():
     curated()
     rejection()
     reading()
+    checkwork()
     n_fuzz = fuzz()
     print("=" * 60)
     print("curated + fuzz problems checked: %d (fuzz: %d)" % (_TOTAL, n_fuzz))

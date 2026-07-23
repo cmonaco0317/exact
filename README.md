@@ -113,6 +113,37 @@ impossible-to-miss box and downgrades the badge rather than stamping a plain ✓
 possibly-misread problem. When SymPy genuinely can't solve something, it says so
 rather than guessing.
 
+## "Check my work" — the mode this architecture is actually best at
+
+Paste **your own** steps, one per line. Every line is checked against the one above
+it, and you get the first line that breaks and why:
+
+```
+2x + 6 = 10
+2x = 16     ← ✗ introduces 8, which doesn't solve the line above
+x = 8       ← ✓ same solution set: {8}
+```
+
+Note the second verdict: line 3 *does* follow from line 2. You were consistent after
+the slip, and the tool says so instead of marking everything after the first error
+wrong. `(a+b)^2 → a^2 + b^2` comes back with *"not equal — the difference is 2ab"*.
+
+Two things make this the right shape for a CAS:
+
+- **It checks the invariant that actually matters.** For a solve chain that's the
+  *solution set*, not equality — `2x = 4` and `x = 2` aren't equal as equations but
+  are equivalent as problems, and checking equality would flag every correct
+  solution. For an expression chain it's algebraic identity.
+- **Narrowing isn't an error.** Writing `(x-2)(x-3) = 0` then `x = 2` is enumerating
+  a root, which is how solutions are *written*. It passes, with a note saying which
+  roots you haven't written yet. Inventing a root that doesn't satisfy the previous
+  line is what gets flagged. A false alarm here tells a correct student they're
+  wrong, which is worse than not shipping the feature — so the tests pin both
+  directions.
+
+**It needs no API key and no network.** That's deliberate: the most differentiating
+thing the tool does shouldn't be the part behind a paywall.
+
 ## What it solves
 
 - **Calculus** — derivatives (higher-order, partial, gradient, Hessian), indefinite/
@@ -154,7 +185,10 @@ edges:
   you get a timeout message instead of an answer.
 - **Unrecognized phrasing is refused, not guessed.** The implicit-multiplication parser
   would otherwise read `mean of 5` as `5·E·a·f·m·n·o` and badge it as exact.
-- **First load fetches ~15 MB** (Pyodide + SymPy), then it's cached.
+- **First load fetches ~13 MB** (Pyodide + SymPy) before the engine is usable, then
+  it's cached. The 4.35 MB plot library is no longer part of that — it's fetched on
+  demand the first time a result actually draws a graph, which most queries never do.
+  "Check my work" needs no network at all once the engine is up.
 
 ## Photo input & AI features — bring your own key
 
@@ -214,7 +248,7 @@ python3 -m http.server 8000
 and the verifier live in the browser, so a green run here is the same verifier a user
 gets — no drift between what's tested and what ships.
 
-`test_solver.py` is the committable harness, **993 checks, all passing**:
+`test_solver.py` is the committable harness, **1010 checks, all passing**:
 
 - **81 curated known-answer cases**, compared by SymPy equivalence rather than string
   match (indefinite integrals are checked by differentiating back to the integrand).

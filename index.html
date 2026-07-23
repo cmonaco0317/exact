@@ -40,6 +40,30 @@
   .sub{color:var(--muted);font-size:13.5px;margin:2px 0 18px}
   .sub b{color:var(--ink);font-weight:600}
 
+  .modes{display:flex;gap:6px;margin:0 2px 8px}
+  .modebtn{border:1px solid var(--line);background:var(--panel-2);color:var(--muted);
+    font-size:13.5px;font-weight:600;border-radius:999px;padding:6px 14px;cursor:pointer}
+  .modebtn.on{background:var(--panel);color:var(--ink);border-color:var(--accent)}
+  form.askwork{flex-direction:column;align-items:stretch;gap:8px}
+  form.askwork textarea{border:0;background:transparent;color:var(--ink);font-size:15px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;padding:8px;outline:none;resize:vertical;line-height:1.6}
+  form.askwork textarea::placeholder{color:var(--muted)}
+  form.askwork button{align-self:flex-end;height:38px}
+  .workhint{font-size:12.5px;color:var(--muted);margin:8px 4px 0;line-height:1.5}
+  .workhint b{color:var(--ok)}
+  /* per-step verdicts for "check my work" */
+  .wsteps{margin:6px 0 0}
+  .wstep{display:flex;gap:9px;align-items:flex-start;padding:8px 4px;border-bottom:1px solid var(--line)}
+  .wstep:last-child{border-bottom:0}
+  .wstep .wmark{font-weight:700;flex:0 0 auto;width:16px;text-align:center}
+  .wstep.good .wmark{color:var(--ok)}
+  .wstep.bad .wmark{color:var(--warn)}
+  .wstep.skip .wmark{color:var(--muted)}
+  .wstep .wbody{min-width:0}
+  .wstep .wline{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13.5px;overflow-x:auto}
+  .wstep .wnote{font-size:12.5px;color:var(--muted);margin-top:2px}
+  .wstep.bad{background:var(--warn-bg);border-radius:8px}
+  .wstep.bad .wnote{color:var(--warn);font-weight:600}
   .askbar{position:sticky;top:6px;z-index:5}
   form.ask{display:flex;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:8px;box-shadow:var(--shadow)}
   form.ask input{
@@ -160,14 +184,25 @@
   </header>
   <div class="sub">Snap a photo of a problem, or type it in plain math. Every answer is computed by a real computer-algebra engine — <b>never by a language model</b> — then <b>re-checked by a second, independent method</b> before display. The badge on each answer tells you which guarantee you got.</div>
 
+  <div class="modes" role="tablist" aria-label="Mode">
+    <button id="mode-solve" type="button" class="modebtn on" role="tab" aria-selected="true">Solve it</button>
+    <button id="mode-check" type="button" class="modebtn" role="tab" aria-selected="false">Check my work</button>
+  </div>
+
   <div class="askbar">
     <form class="ask" id="ask" autocomplete="off">
       <button id="cam" type="button" class="cambtn" title="Solve from a photo" aria-label="Solve from a photo" disabled>📷</button>
       <input id="q" name="q" placeholder="derivative of x^2 sin(x)" inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false" disabled />
       <button id="go" type="submit" disabled>Solve</button>
     </form>
+    <form class="ask askwork hidden" id="askwork" autocomplete="off">
+      <textarea id="work" rows="5" spellcheck="false" autocapitalize="off" autocorrect="off"
+        placeholder="Paste your own steps, one per line:&#10;2x + 6 = 10&#10;2x = 4&#10;x = 2"></textarea>
+      <button id="gowork" type="submit" disabled>Check</button>
+    </form>
     <input id="photo" type="file" accept="image/*" capture="environment" class="hidden" />
   </div>
+  <div id="workhint" class="workhint hidden">Every line is checked against the one above it, and you get the first line that breaks. Runs entirely offline — <b>no API key needed</b>.</div>
 
   <div class="keyrow" id="keyrow">
     <button id="keytoggle" type="button" class="keychip" aria-expanded="false">🔑 <span id="keystate">Add your API key</span></button>
@@ -188,7 +223,9 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg" crossorigin="anonymous"></script>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" integrity="sha384-cCVCZkAjYNxaYKbM8lsArLznDF/SvMFr1jcZrvOpSTCa0W40ZAdLzHCEulnUa5i7" crossorigin="anonymous" charset="utf-8"></script>
+<!-- Plotly (4.35 MB) is NOT loaded here: it is fetched on demand by loadPlotly()
+     the first time a result actually draws a graph, with the same SRI hash. -->
+
 <!-- Pyodide is NOT loaded here: it runs inside the solve worker, which fetches it
      and verifies the same SHA-384 hash before evaluating it (see PYODIDE_SRI). -->
 
@@ -263,7 +300,29 @@ function themeColors(){
            accent:cs.getPropertyValue('--accent').trim(), line:cs.getPropertyValue('--line').trim() };
 }
 
-function drawPlot(el, spec){
+// Plotly is 4.35 MB and was fetched on every single page view via a <script>
+// tag — but it is only needed once a result actually draws a graph, which most
+// queries never do. Loading it on demand takes it off the critical path
+// entirely without changing anything a user sees. The SRI hash is set on the
+// injected element, so deferring the load doesn't cost the integrity check.
+const PLOTLY_URL = "https://cdn.plot.ly/plotly-2.35.2.min.js";
+const PLOTLY_SRI = "sha384-cCVCZkAjYNxaYKbM8lsArLznDF/SvMFr1jcZrvOpSTCa0W40ZAdLzHCEulnUa5i7";
+let plotlyPromise = null;
+function loadPlotly(){
+  if(window.Plotly) return Promise.resolve(window.Plotly);
+  if(plotlyPromise) return plotlyPromise;
+  plotlyPromise = new Promise((resolve, reject)=>{
+    const s=document.createElement("script");
+    s.src=PLOTLY_URL; s.integrity=PLOTLY_SRI; s.crossOrigin="anonymous"; s.charset="utf-8";
+    s.onload=()=>resolve(window.Plotly);
+    s.onerror=()=>{ plotlyPromise=null; reject(new Error("plot library failed to load")); };
+    document.head.appendChild(s);
+  });
+  return plotlyPromise;
+}
+
+async function drawPlot(el, spec){
+  await loadPlotly();
   const t=themeColors();
   if(spec.surface){
     const data=[{type:'surface', x:spec.x, y:spec.y, z:spec.z, colorscale:'Viridis', showscale:false}];
@@ -352,7 +411,10 @@ function render(res, cross){
 
   if(res.plot){
     const pd=document.createElement("div"); pd.className="plot"; body.appendChild(pd);
-    setTimeout(()=>{ try{ drawPlot(pd, res.plot); }catch(e){ pd.remove(); } }, 0);
+    // drawPlot is async now (it fetches the plot library on first use), so the
+    // failure path has to be a .catch — a sync try/catch would miss a rejection
+    // and leave an empty box sitting in the card.
+    setTimeout(()=>{ drawPlot(pd, res.plot).catch(()=>pd.remove()); }, 0);
   }
 
   // Teach: on-demand tutor explanation of this verified result (not for bare evaluations)
@@ -450,6 +512,7 @@ const WORKER_SRC = `
 const BASE = ${JSON.stringify(PYODIDE_BASE)};
 const SRI  = ${JSON.stringify(PYODIDE_SRI)};
 let solveFn = null;
+let checkFn = null;
 const post = (o) => self.postMessage(o);
 
 async function loadVerified(url, sri){
@@ -474,7 +537,9 @@ async function init(solverUrl){
   const src = await (await fetch(solverUrl)).text();
   pyodide.runPython(src);
   const fn = pyodide.globals.get("solve_json");
+  const cw = pyodide.globals.get("check_work_json");
   solveFn = (q) => fn(q);
+  checkFn = (w) => cw(w);
   try{ solveFn("derivative of x"); }catch(e){}   // warm up: the first call is slow
   post({ kind:"ready" });
 }
@@ -487,7 +552,7 @@ self.onmessage = async (e) => {
     return;
   }
   if(!solveFn){ post({ id:d.id, ok:false, error:"The engine is still starting \\u2014 try again in a moment." }); return; }
-  try{ post({ id:d.id, ok:true, json: solveFn(d.q) }); }
+  try{ post({ id:d.id, ok:true, json: d.mode === "check" ? checkFn(d.q) : solveFn(d.q) }); }
   catch(err){ post({ id:d.id, ok:false, error:"The engine couldn't handle that input." }); }
 };
 `;
@@ -547,7 +612,7 @@ function restartWorker(){
   bringUpWorker();
 }
 
-const localSolve = async (q)=>{
+const localSolve = async (q, mode)=>{
   if(!worker) return { ok:false, error:"The engine isn't running. Reload the page." };
   if(!engineReady){
     setStatus("Restarting the engine…", true);
@@ -565,7 +630,7 @@ const localSolve = async (q)=>{
         + "closed form and can run for minutes — try a numeric or lower-degree version." });
     }, SOLVE_TIMEOUT_MS);
     pending.set(id, { resolve, timer });
-    worker.postMessage({ id, q });
+    worker.postMessage({ id, q, mode });
   });
 };
 const scrollTop = ()=> window.scrollTo({ top:0, behavior:"smooth" });
@@ -626,6 +691,77 @@ async function handleSubmit(q){
 }
 
 $("#ask").addEventListener("submit",(e)=>{ e.preventDefault(); handleSubmit($("#q").value); });
+
+// ---- "check my work": verify the USER's own steps, offline and keyless ----
+// This is the mode the architecture is actually best at, so it gets equal
+// billing with Solve rather than being buried — and it needs no API key, which
+// is the point: the most differentiating feature shouldn't be the paywalled one.
+function setMode(m){
+  const check = m === "check";
+  $("#mode-solve").classList.toggle("on", !check);
+  $("#mode-check").classList.toggle("on", check);
+  $("#mode-solve").setAttribute("aria-selected", String(!check));
+  $("#mode-check").setAttribute("aria-selected", String(check));
+  $("#ask").classList.toggle("hidden", check);
+  $("#askwork").classList.toggle("hidden", !check);
+  $("#workhint").classList.toggle("hidden", !check);
+  $("#keyrow").classList.toggle("hidden", check);   // no key is involved here
+  $("#chips").classList.toggle("hidden", check);
+  (check ? $("#work") : $("#q")).focus();
+}
+$("#mode-solve").onclick = ()=>setMode("solve");
+$("#mode-check").onclick = ()=>setMode("check");
+
+async function handleCheck(text){
+  if(!worker || !(text||"").trim()) return;
+  setStatus("Checking your steps…", true);
+  const res = await localSolve(text, "check");
+  setStatus(null);
+  renderWork(res);
+  scrollTop();
+}
+$("#askwork").addEventListener("submit",(e)=>{ e.preventDefault(); handleCheck($("#work").value); });
+
+function renderWork(res){
+  const card=document.createElement("div"); card.className="card";
+  const head=document.createElement("div"); head.className="head";
+  head.innerHTML='<span class="kind"></span><span class="badge"></span>';
+  head.querySelector(".kind").textContent="your work";
+  const [bcls,btxt]= res.ok
+    ? (res.verified===true  ? ['ok','✓ Every step holds']
+     : res.verified===false ? ['warn','⚠ Found the error']
+     : ['neutral','· Partly checked'])
+    : ['warn','⚠ Couldn’t read that'];
+  const b=head.querySelector(".badge"); b.className="badge "+bcls; b.textContent=btxt;
+  card.appendChild(head);
+
+  const body=document.createElement("div"); body.className="body";
+  if(!res.ok){
+    const e=document.createElement("div"); e.className="vnote"; e.style.whiteSpace="pre-wrap";
+    e.textContent=res.error||"Couldn't read that."; body.appendChild(e);
+    card.appendChild(body); results.prepend(card); return;
+  }
+  const ans=document.createElement("div"); ans.className="answer";
+  km(res.answer_latex||"", ans, true); body.appendChild(ans);
+  const vn=document.createElement("div"); vn.className="vnote"; vn.textContent=res.answer_str||""; body.appendChild(vn);
+
+  const list=document.createElement("div"); list.className="wsteps";
+  (res.work||[]).forEach((s,i)=>{
+    const row=document.createElement("div");
+    const cls = s.ok===true ? "good" : s.ok===false ? "bad" : "skip";
+    row.className="wstep "+cls;
+    const mark=document.createElement("div"); mark.className="wmark";
+    mark.textContent = s.ok===true ? "✓" : s.ok===false ? "✗" : "–";
+    const bod=document.createElement("div"); bod.className="wbody";
+    const ln=document.createElement("div"); ln.className="wline";
+    ln.textContent=`${i+2}. ${s.to}`;              // the line this verdict is about
+    const nt=document.createElement("div"); nt.className="wnote"; nt.textContent=s.note||"";
+    bod.append(ln,nt); row.append(mark,bod); list.appendChild(row);
+  });
+  body.appendChild(list);
+  card.appendChild(body);
+  results.prepend(card);
+}
 
 // ---- bring-your-own-key (stored only in the visitor's browser) ----
 const KEY_LS = "exact_anthropic_key";
@@ -1027,7 +1163,9 @@ async function boot(){
   }
   engineReady = true;
   setStatus(null);
-  $("#q").disabled=false; $("#go").disabled=false; $("#cam").disabled=false; $("#q").focus();
+  $("#q").disabled=false; $("#go").disabled=false; $("#cam").disabled=false;
+  $("#gowork").disabled=false;
+  $("#q").focus();
 }
 boot();
 </script>

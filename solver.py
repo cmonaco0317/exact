@@ -2831,6 +2831,173 @@ def _strip_dv(body):
     return re.sub(r"\s*d\s*[a-z]\s*$", "", body.strip())
 
 
+# --------------------------------------------------------------------------- #
+#  "Check my work" — verify a solution the USER wrote, line by line.
+#
+#  This is the one thing a CAS is structurally better at than any chat model, and
+#  it inverts the product: instead of handing over an answer, it confirms your
+#  own reasoning and points at the first line that breaks. It needs no API key
+#  and no network — the whole point is that the most useful mode is the free one.
+#
+#  Two kinds of chain, detected automatically:
+#    * EXPRESSION chain (x^2+2x, x(x+2), ...) — consecutive lines must be
+#      algebraically equal.
+#    * EQUATION chain (2x+6=10, 2x=4, x=2) — consecutive lines must have the
+#      same solution set. That is the right invariant for solving: `2x=4` and
+#      `x=2` are not equal as equations, but they are equivalent as problems.
+#      Checking equality here would flag every correct solution.
+# --------------------------------------------------------------------------- #
+def _line_pairs(raw):
+    """Split pasted work into comparable lines, dropping decoration."""
+    out = []
+    for ln in str(raw or "").replace("\r", "").split("\n"):
+        s = ln.strip()
+        s = re.sub(r"^(?:step\s*\d+\s*[:.)]|\d+\s*[.)])\s*", "", s, flags=re.I)
+        s = s.lstrip("=").strip()  # leading "= x^3/3" continuation style
+        s = re.sub(r"\+\s*C\b\s*$", "", s).strip()  # constant of integration
+        if s and not re.fullmatch(r"[-–—_=\s]+", s):
+            out.append(s)
+    return out
+
+
+def _solset(expr_str, var):
+    """Solution set of an equation, as a canonical sorted tuple of strings."""
+    lhs, rhs = expr_str.split("=", 1)
+    eq = Eq(_P(lhs), _P(rhs))
+    sols = sp_solve(eq, var, dict=False)
+    if not isinstance(sols, (list, tuple)):
+        sols = [sols]
+    return tuple(sorted(str(simplify(s)) for s in sols))
+
+
+def check_work(raw):
+    """Verify a user's own solution chain and locate the first broken step."""
+    lines = _line_pairs(raw)
+    if len(lines) < 2:
+        raise UserError(
+            "Paste at least two lines of your own work — each line one step, e.g.\n"
+            "2x + 6 = 10\n2x = 4\nx = 2"
+        )
+    is_eq = all("=" in ln for ln in lines)
+    steps = []
+    first_bad = None
+    var = None
+    if is_eq:
+        syms = set()
+        for ln in lines:
+            try:
+                syms |= _P(ln.replace("=", "-(") + ")").free_symbols
+            except Exception:
+                pass
+        var = _pick_var(sp.Add(*syms) if syms else Symbol("x"))
+
+    for i in range(1, len(lines)):
+        a, b = lines[i - 1], lines[i]
+        ok, note = None, ""
+        try:
+            # A line of prose isn't a step. Without this the implicit-
+            # multiplication parser turns "integral" into E*a*g*i*l*n*r*t and
+            # then confidently reports that it doesn't equal the next line.
+            if _prose_tokens(a.replace("=", " ")) or _prose_tokens(b.replace("=", " ")):
+                raise ValueError("prose")
+            if is_eq:
+                sa, sb = _solset(a, var), _solset(b, var)
+                if sa == sb:
+                    ok = True
+                    note = f"same solution set: {{{', '.join(sa) or 'none'}}}"
+                elif sb and set(sb) < set(sa):
+                    # Narrowing to a subset is how people WRITE solutions —
+                    # "(x-2)(x-3)=0" then "x = 2" is enumerating a root, not an
+                    # error. Flagging it would false-alarm on the commonest
+                    # homework pattern there is, so it passes, with a note that
+                    # says which roots haven't been written down yet.
+                    missing = [s for s in sa if s not in set(sb)]
+                    ok = True
+                    note = (
+                        f"valid — one of the {len(sa)} solutions"
+                        f" (still to write: {', '.join(missing)})"
+                    )
+                else:
+                    extra = [s for s in sb if s not in set(sa)]
+                    ok = False
+                    note = (
+                        f"introduces {', '.join(extra)}, which doesn't solve the line above"
+                        if extra
+                        else f"solutions changed: {{{', '.join(sa) or 'none'}}} became {{{', '.join(sb) or 'none'}}}"
+                    )
+            else:
+                d = simplify(_P(a) - _P(b))
+                ok = d == 0
+                note = (
+                    "algebraically identical to the line above"
+                    if ok
+                    else f"not equal — the difference is {d}, not 0"
+                )
+        except UserError:
+            raise
+        except Exception:
+            ok, note = None, "couldn't read this line as math"
+        steps.append({"from": a, "to": b, "ok": ok, "note": note})
+        if ok is False and first_bad is None:
+            first_bad = i
+
+    checked = sum(1 for s in steps if s["ok"] is not None)
+    good = sum(1 for s in steps if s["ok"] is True)
+    if first_bad is not None:
+        head = rf"\text{{First error on line }} {first_bad + 1}"
+        summary = f"line {first_bad + 1} doesn't follow from line {first_bad}"
+        verified = False
+    elif checked == 0:
+        head = r"\text{Couldn't read any of those steps}"
+        summary = "none of the lines parsed as math"
+        verified = None
+    elif good == checked:
+        skipped = len(steps) - checked
+        head = rf"\text{{All }} {checked} \text{{ steps check out}}"
+        summary = "every step follows from the one before it" + (
+            " (same solution set at each stage)" if is_eq else ""
+        )
+        verified = True
+        if skipped:
+            # An unreadable line is a hole in the chain. Don't stamp a clean
+            # verification across a gap -- say what was actually checked.
+            head = rf"\text{{The }} {checked} \text{{ readable steps hold}}"
+            summary += f" — but {skipped} line(s) weren't math and were skipped"
+            verified = None
+    else:
+        head = r"\text{Some steps couldn't be checked}"
+        summary = f"{good} of {checked} steps verified; the rest wouldn't parse"
+        verified = None
+
+    return _result(
+        type="check my work",
+        input_latex=r"\text{your work, " + str(len(lines)) + r" lines}",
+        answer_latex=head,
+        answer_str=summary,
+        verified=verified,
+        verify_note=(
+            "each line checked against the one above it — "
+            + ("solution sets compared" if is_eq else "algebraic equality compared")
+        ),
+        steps=[],
+        work=steps,
+        first_bad=first_bad,
+    )
+
+
+def check_work_json(raw):
+    """JSON wrapper for the browser, mirroring solve_json."""
+    import json
+
+    try:
+        r = check_work(raw)
+    except UserError as e:
+        r = {"ok": False, "error": str(e)}
+    except Exception:
+        r = {"ok": False, "error": _GENERIC_PARSE_ERROR}
+    return json.dumps(r, default=lambda o: str(o))
+
+
 def solve_json(query):
     """JSON-string wrapper so the browser (Pyodide) gets plain data, no proxies."""
     import json
